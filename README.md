@@ -322,14 +322,29 @@ node fuzz-client.js \
 
 | 路径 | 说明 |
 | --- | --- |
-| `server.js` | TLS/WSS daemon、命令执行、文件接口和 relay |
-| `lib/client.js` | Node.js 公共客户端库 |
-| `tui-client.js` | 交互式终端客户端 |
-| `pi-extension/remote-exec.ts` | Pi 工具扩展 |
-| `test-client.js` | 协议和端到端回归客户端 |
-| `fuzz-client.js` | WebSocket 畸形输入验证 |
-| `test-runner.js` | 测试环境编排和临时凭证生成 |
+| `server.js` | 保留兼容性的 daemon 启动入口 |
+| `src/daemon/main.js` | daemon 参数解析、启动和生命周期 |
+| `src/daemon/http-server.js` | HTTP、HTTPS 和 WebSocket upgrade 入口 |
+| `src/daemon/rpc.js` | WebSocket 会话、RPC 分发和断连取消 |
+| `src/daemon/exec.js` | 命令执行、流式输出、超时和进程组清理 |
+| `src/daemon/files.js` | 文件 RPC 及 HTTP 上传下载 |
+| `src/daemon/relay.js` | relay 白名单、连接和流式转发 |
+| `src/client/index.js` | Node.js 公共客户端统一导出 |
+| `src/client/config.js` | `hosts.json` 配置加载 |
+| `src/client/websocket.js` | Node.js WSS 传输 |
+| `src/client/host.js` | 直连和单跳 relay 调用 |
+| `src/client/transfer.js` | HTTP 文件上传下载 |
+| `lib/client.js` | 保留 npm `main` 兼容路径 |
+| `src/tui/app.js` | 交互式终端客户端 |
+| `tui-client.js` | 保留兼容性的 TUI 启动入口 |
+| `pi-extension/remote-exec.ts` | Pi 工具扩展和 Pi 专属传输适配 |
+| `test/integration/` | 协议、认证、执行、文件和 relay 回归测试 |
+| `test/fuzz/` | WebSocket 畸形输入验证 |
+| `test-runner.js` | 保留兼容性的测试启动入口 |
 | `SECURITY.md` | 安全边界与漏洞报告政策 |
+
+运行时依赖方向保持单向：daemon 不依赖 client，TUI 依赖 Node client，Pi extension 保持独立，集成测试通过外部进程验证 daemon，不复用生产传输实现。
+
 
 ## 许可证
 

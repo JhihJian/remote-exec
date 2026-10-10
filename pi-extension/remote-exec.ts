@@ -502,9 +502,31 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 			cwd: Type.Optional(Type.String({ description: "工作目录（绝对路径，可选）" })),
 			timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒数，默认 5 分钟" })),
 		}),
-		async execute(_id, params) {
-			const text = await remoteBash(params.host, params.command, params.cwd, params.timeoutMs);
-			return { content: [{ type: "text", text }], details: { host: params.host } };
+		async execute(_id, params, signal, onUpdate) {
+			// 单调时钟计量整个调用（含连接和 relay 等待），每个调用独立计时。
+			const startedAt = performance.now();
+			const elapsedMs = () => Math.max(0, performance.now() - startedAt);
+			const update = () => onUpdate?.({
+				content: [],
+				details: { host: params.host, elapsedMs: elapsedMs() },
+			});
+			let timer: ReturnType<typeof setInterval> | undefined;
+			const stopTimer = () => {
+				if (timer) clearInterval(timer);
+			};
+			try {
+				if (onUpdate && !signal?.aborted) {
+					update();
+					timer = setInterval(update, 1000);
+					timer.unref();
+					signal?.addEventListener("abort", stopTimer, { once: true });
+				}
+				const text = await remoteBash(params.host, params.command, params.cwd, params.timeoutMs);
+				return { content: [{ type: "text", text }], details: { host: params.host, elapsedMs: elapsedMs() } };
+			} finally {
+				stopTimer();
+				signal?.removeEventListener("abort", stopTimer);
+			}
 		},
 		renderCall(args, theme) {
 			let extras = "";
@@ -512,6 +534,20 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 			if (args.timeoutMs) extras += theme.fg("muted", ` (timeout ${Math.round(args.timeoutMs / 1000)}s)`);
 			const cmd = args.command ? theme.fg("toolTitle", theme.bold(`$ ${args.command}`)) : "";
 			return callTitle(theme, "remote_bash", args.host, `${cmd}${extras}`);
+		},
+		renderResult(result, options, theme) {
+			const details = result.details as { elapsedMs?: number } | undefined;
+			const elapsed = typeof details?.elapsedMs === "number"
+				? `${(details.elapsedMs / 1000).toFixed(1)}s`
+				: undefined;
+			const status = elapsed ? theme.fg("muted", `${options.isPartial ? "执行中 · 已用时" : "耗时"} ${elapsed}`) : "";
+			const output = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+			const lines = output.split("\n");
+			const visible = options.expanded ? output : lines.slice(0, 10).join("\n");
+			const more = !options.expanded && lines.length > 10
+				? theme.fg("muted", `\n… 还有 ${lines.length - 10} 行，展开查看`)
+				: "";
+			return new Text([status, visible ? theme.fg("toolOutput", visible) + more : ""].filter(Boolean).join("\n"), 0, 0);
 		},
 	});
 

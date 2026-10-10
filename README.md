@@ -228,6 +228,8 @@ node src/tui/app.js --list
 
 每个工具都定义了 `renderCall`，Pi TUI 会直接显示调用的主机与命令（如 `remote_bash [nm105] $ ls -la`），而不是只显示工具名。
 
+`remote_bash` 执行期间每秒刷新“执行中 · 已用时 3.0s”，结束后显示最终“耗时 3.2s”。耗时从插件开始执行工具到收到结果计量，包含连接、网关转发和远程执行等待。每次调用独立计时，最终耗时保存在工具结果中，重新打开会话仍可显示。输出默认显示前 10 行，展开后查看完整内容。
+
 注册 extension：
 
 ```bash
@@ -298,6 +300,7 @@ npm test
 
 - `npm run check`：检查 JavaScript 语法。
 - `npm run typecheck`：执行 TypeScript 类型检查。
+- `npm run test:extension`：验证 Pi 命令耗时更新、并行调用计时、结束后的定时器清理及结果渲染。
 - `npm run test:integration`：生成临时证书和 token，启动 daemon，运行端到端测试和畸形输入验证。
 
 单独运行协议回归：

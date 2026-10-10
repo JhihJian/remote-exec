@@ -1,4 +1,8 @@
 declare module "@earendil-works/pi-coding-agent" {
+  export interface ToolResult {
+    content: Array<{ type: string; text: string }>;
+    details?: unknown;
+  }
   export interface ExtensionAPI {
     registerTool(tool: {
       name: string;
@@ -7,12 +11,20 @@ declare module "@earendil-works/pi-coding-agent" {
       promptSnippet?: string;
       promptGuidelines?: string[];
       parameters: unknown;
-      execute: (id: string, params: any) => Promise<{
-        content: Array<{ type: string; text: string }>;
-        details?: unknown;
-      }>;
+      execute: (
+        id: string,
+        params: any,
+        signal: AbortSignal | undefined,
+        onUpdate: ((result: ToolResult) => void) | undefined,
+      ) => Promise<ToolResult>;
       /** TUI 中工具调用行的自定义渲染（缺省时只显示工具名） */
       renderCall?: (args: any, theme: any, context: any) => { render(width: number): string[] };
+      renderResult?: (
+        result: ToolResult,
+        options: { expanded: boolean; isPartial: boolean },
+        theme: any,
+        context: any,
+      ) => { render(width: number): string[] };
     }): void;
     on(
       event: "before_agent_start",

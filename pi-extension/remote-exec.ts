@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
@@ -414,6 +415,18 @@ function resolveHost(hostName: string): { host: HostConfig; token: string } {
 
 // ---------- 工具实现 ----------
 
+/** TUI 调用行标题：remote_bash [nm105] $ ls -la（host 用 accent 高亮，参数未流式完时显示 …） */
+function callTitle(
+	theme: { fg(color: string, text: string): string; bold(text: string): string },
+	name: string,
+	host: string | undefined,
+	rest: string,
+): Text {
+	const hostPart = host ? `${theme.fg("accent", `[${host}]`)} ` : "";
+	const body = rest || theme.fg("toolOutput", "…");
+	return new Text(theme.fg("toolTitle", theme.bold(`${name} `)) + hostPart + body, 0, 0);
+}
+
 function unknownHostResult(err: unknown): string {
 	return `远程执行失败：${err instanceof Error ? err.message : String(err)}`;
 }
@@ -493,6 +506,13 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 			const text = await remoteBash(params.host, params.command, params.cwd, params.timeoutMs);
 			return { content: [{ type: "text", text }], details: { host: params.host } };
 		},
+		renderCall(args, theme) {
+			let extras = "";
+			if (args.cwd) extras += theme.fg("muted", ` (cwd ${args.cwd})`);
+			if (args.timeoutMs) extras += theme.fg("muted", ` (timeout ${Math.round(args.timeoutMs / 1000)}s)`);
+			const cmd = args.command ? theme.fg("toolTitle", theme.bold(`$ ${args.command}`)) : "";
+			return callTitle(theme, "remote_bash", args.host, `${cmd}${extras}`);
+		},
 	});
 
 	pi.registerTool({
@@ -507,6 +527,9 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 		async execute(_id, params) {
 			const text = await remoteRead(params.host, params.file);
 			return { content: [{ type: "text", text }], details: { host: params.host, file: params.file } };
+		},
+		renderCall(args, theme) {
+			return callTitle(theme, "remote_read", args.host, theme.fg("toolTitle", theme.bold(args.file ?? "")));
 		},
 	});
 
@@ -523,6 +546,9 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 		async execute(_id, params) {
 			const text = await remoteWrite(params.host, params.file, params.content);
 			return { content: [{ type: "text", text }], details: { host: params.host, file: params.file } };
+		},
+		renderCall(args, theme) {
+			return callTitle(theme, "remote_write", args.host, theme.fg("toolTitle", theme.bold(args.file ?? "")));
 		},
 	});
 
@@ -543,6 +569,10 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 			const text = await httpUpload(host, token, params.localFile, params.remoteFile);
 			return { content: [{ type: "text", text }], details: { host: params.host, remoteFile: params.remoteFile } };
 		},
+		renderCall(args, theme) {
+			const body = `${theme.fg("toolTitle", theme.bold(args.localFile ?? ""))}${theme.fg("muted", " -> ")}${theme.fg("toolTitle", theme.bold(args.remoteFile ?? ""))}`;
+			return callTitle(theme, "remote_upload", args.host, body);
+		},
 	});
 
 	pi.registerTool({
@@ -560,6 +590,10 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 			if (host.via) throw new Error(`"${params.host}" 经网关 "${host.via}" 中转，暂不支持流式下载。可先下载到网关再从网关拉取，或用 ssh -L 临时隧道`);
 			const text = await httpDownload(host, token, params.remoteFile, params.localFile);
 			return { content: [{ type: "text", text }], details: { host: params.host, remoteFile: params.remoteFile } };
+		},
+		renderCall(args, theme) {
+			const body = `${theme.fg("toolTitle", theme.bold(args.remoteFile ?? ""))}${theme.fg("muted", " -> ")}${theme.fg("toolTitle", theme.bold(args.localFile ?? ""))}`;
+			return callTitle(theme, "remote_download", args.host, body);
 		},
 	});
 

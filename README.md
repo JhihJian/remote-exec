@@ -226,6 +226,8 @@ node tui-client.js --list
 | `remote_upload` | 流式上传本地文件 |
 | `remote_download` | 流式下载远程文件 |
 
+每个工具都定义了 `renderCall`，Pi TUI 会直接显示调用的主机与命令（如 `remote_bash [nm105] $ ls -la`），而不是只显示工具名。
+
 注册 extension：
 
 ```bash

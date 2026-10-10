@@ -1,0 +1,164 @@
+{
+  "documentStatus": "active",
+  "documents": [
+    {
+      "role": "overview",
+      "path": "docs/architecture/ARCHITECTURE.md",
+      "anchor": "架构总览"
+    }
+  ],
+  "items": [
+    {
+      "id": "system-purpose",
+      "conclusion": "remote-exec 在受信任的 Linux 主机上通过 TLS、Bearer token 和 JSON-RPC 风格协议交付远程命令、文件传输和单跳 relay。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "README.md",
+          "locator": "面向受信任 Linux 主机的轻量远程执行 daemon。它通过 TLS、Bearer token 和 JSON-RPC 风格协议提供以下能力："
+        }
+      ]
+    },
+    {
+      "id": "daemon-entry-boundary",
+      "conclusion": "daemon 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "src/daemon/http-server.js",
+          "locator": "if (req.url === \"/healthz\" || req.url === \"/readyz\")"
+        },
+        {
+          "path": "src/daemon/http-server.js",
+          "locator": "wss.handleUpgrade(req, socket, head, (ws) => wss.emit(\"connection\", ws, req));"
+        }
+      ]
+    },
+    {
+      "id": "rpc-operation-boundary",
+      "conclusion": "RPC 服务器只暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "src/daemon/rpc.js",
+          "locator": "\"exec.stream\": execStreamCommand,"
+        },
+        {
+          "path": "src/daemon/rpc.js",
+          "locator": "queue = queue"
+        },
+        {
+          "path": "src/daemon/rpc.js",
+          "locator": "[...inflight].forEach((cancel) => cancel());"
+        }
+      ]
+    },
+    {
+      "id": "command-execution-semantics",
+      "conclusion": "命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "src/daemon/exec.js",
+          "locator": "return spawn(\"bash\", [\"-lc\", command], {"
+        },
+        {
+          "path": "src/daemon/exec.js",
+          "locator": "process.kill(-child.pid, name)"
+        },
+        {
+          "path": "src/daemon/exec.js",
+          "locator": "for (let offset = 0; offset < data.length; offset += STREAM_CHUNK_BYTES)"
+        }
+      ]
+    },
+    {
+      "id": "file-transport-boundary",
+      "conclusion": "文件 RPC 只接受绝对路径。大文件经 `/upload` 与 `/download` 的 HTTPS 流式端点传输，两个端点只支持直连 daemon，不经 relay。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "src/daemon/files.js",
+          "locator": "if (typeof file !== \"string\" || !path.isAbsolute(file))"
+        },
+        {
+          "path": "README.md",
+          "locator": "- HTTP `/upload` 和 `/download` 只支持直连 daemon，不经 relay 转发。"
+        }
+      ]
+    },
+    {
+      "id": "client-adapter-boundary",
+      "conclusion": "Node.js 客户端负责直连和深度为一的 relay 编排。TUI 依赖 Node.js 客户端；Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "src/client/host.js",
+          "locator": "if (gateway.via) throw new Error(\"via 链深度仅支持 1，不支持链式转发\");"
+        },
+        {
+          "path": "README.md",
+          "locator": "运行时依赖方向保持单向：daemon 不依赖 client，TUI 依赖 Node client，Pi extension 保持独立，集成测试通过外部进程验证 daemon，不复用生产传输实现。"
+        },
+        {
+          "path": "pi-extension/remote-exec.ts",
+          "locator": "协议行为参考仓库中的 test/integration/client.js。"
+        }
+      ]
+    },
+    {
+      "id": "relay-security-boundary",
+      "conclusion": "relay 只接受 IPv4 字面量和白名单内目标，只转发 `exec`、`exec.stream`、`file.read` 和 `file.write`，禁止嵌套 relay。网关在连接目标时校验证书，并将目标认证失败、证书失败和不可达状态区分为不同 RPC 错误。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "src/daemon/relay.js",
+          "locator": "target.host 必须是 IPv4 字面量（拒绝 DNS 名，防解析绕过白名单）"
+        },
+        {
+          "path": "src/daemon/relay.js",
+          "locator": "relay 仅支持转发 ${[...RELAY_INNER_METHODS].join(\"/\")}，禁止嵌套 relay"
+        },
+        {
+          "path": "src/daemon/relay.js",
+          "locator": "rejectUnauthorized: true,"
+        }
+      ]
+    },
+    {
+      "id": "token-security-boundary",
+      "conclusion": "有效 token 可以在 daemon 运行用户权限范围内执行 `bash -lc`，并读写该用户可访问的绝对路径。服务端只保存 token 的 SHA-256，不保存 token 明文。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "SECURITY.md",
+          "locator": "持有有效 token 的调用方可以在 daemon 运行用户的权限范围内执行 `bash -lc` 命令，并读写该用户有权限访问的绝对路径文件。"
+        },
+        {
+          "path": "src/daemon/security.js",
+          "locator": "return Buffer.from(hex, \"hex\");"
+        }
+      ]
+    },
+    {
+      "id": "verification-boundary",
+      "conclusion": "`npm test` 先执行 JavaScript 语法检查和 Pi extension 的 TypeScript 类型检查，再由 `test/integration/runner.js` 创建临时证书和 token、以外部进程启动 daemon，最后运行协议回归和 WebSocket 畸形输入测试。集成测试不复用生产传输实现，因此是 daemon、Node client 和 Pi extension 协议契约的主要回归依据。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "package.json",
+          "locator": "\"test\": \"npm run check && npm run typecheck && npm run test:integration\""
+        },
+        {
+          "path": "test/integration/runner.js",
+          "locator": "createCredentials({ cert, key, tokenFile, tokenSha });"
+        },
+        {
+          "path": "test/integration/runner.js",
+          "locator": "server = spawn(process.execPath, ["
+        }
+      ]
+    }
+  ],
+  "openQuestions": []
+}

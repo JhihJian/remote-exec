@@ -318,6 +318,12 @@ node test/fuzz/client.js \\
   --ca .personal/certs/server.crt
 ```
 
+架构边界、核心能力及其测试映射见 [架构总览](docs/architecture/ARCHITECTURE.md)。提交涉及系统边界、信任边界或核心流程的变更后，运行：
+
+```bash
+node .agents/architecture-governance/check-state.mjs check --require-active
+```
+
 ## 目录结构
 
 | 路径 | 说明 |

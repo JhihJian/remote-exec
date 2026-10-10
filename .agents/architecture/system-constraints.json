@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 2,
+  "mvp": {
+    "statement": "调用方选择一个受信任的 daemon 主机，并经已验证的 TLS 连接提交命令、文件操作或 relay 请求，系统在该 daemon 用户权限范围内交付相应的执行结果、文件内容或目标结果。",
+    "document": {
+      "path": "docs/architecture/ARCHITECTURE.md",
+      "anchor": "核心动作约束"
+    }
+  },
+  "constraints": [
+    {
+      "id": "SC-REMOTE-EXEC-001",
+      "status": "active",
+      "rule": "对持有有效 token 的命令请求，系统以 daemon 运行用户权限执行非空 `bash -lc` 命令，并交付退出码以及标准输出和标准错误。",
+      "document": {
+        "path": "docs/architecture/ARCHITECTURE.md",
+        "anchor": "执行远程命令"
+      },
+      "intentEvidence": [
+        {
+          "path": "README.md",
+          "locator": "- 执行远程 `bash -lc` 命令，并返回退出码、标准输出和标准错误。"
+        }
+      ],
+      "currentEvidence": [
+        {
+          "path": "src/daemon/exec.js",
+          "locator": "function spawnShell(command, cwd)"
+        }
+      ],
+      "behaviors": [
+        {
+          "id": "BC-REMOTE-EXEC-001-NORMAL",
+          "kind": "normal",
+          "rule": "命令正常结束时，系统交付命令实际退出码和 Base64 编码的标准输出与标准错误。",
+          "outcome": "调用方获得完整的命令完成结果。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"exec echo 中文\"",
+            "oracle": "退出码为 0，解码后的标准输出等于请求命令产生的文本。"
+          }
+        },
+        {
+          "id": "BC-REMOTE-EXEC-001-TIMEOUT",
+          "kind": "variant",
+          "rule": "命令超过请求超时时间时，系统终止进程组并交付退出码 `124`。",
+          "outcome": "调用方收到超时退出码而非无限等待。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"exec 超时返回 124\"",
+            "oracle": "命令超过 500ms 后返回退出码 124。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "SC-REMOTE-FILE-001",
+      "status": "active",
+      "rule": "对持有有效 token 的文件请求，系统读写 daemon 用户可访问的绝对路径文件，并交付读取内容或写入字节数。",
+      "document": {
+        "path": "docs/architecture/ARCHITECTURE.md",
+        "anchor": "读写远程文件"
+      },
+      "intentEvidence": [
+        {
+          "path": "README.md",
+          "locator": "- 读写绝对路径文件，以及通过 HTTPS 流式上传和下载大文件。"
+        }
+      ],
+      "currentEvidence": [
+        {
+          "path": "src/daemon/files.js",
+          "locator": "async function fileRead(params)"
+        },
+        {
+          "path": "src/daemon/files.js",
+          "locator": "async function fileWrite(params)"
+        }
+      ],
+      "behaviors": [
+        {
+          "id": "BC-REMOTE-FILE-001-NORMAL",
+          "kind": "normal",
+          "rule": "写入后读取同一绝对路径文件时，系统交付与原内容一致的 Base64 数据。",
+          "outcome": "调用方获得与写入内容一致的文本和二进制文件数据。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"file.write/read 往返\"",
+            "oracle": "文本和随机二进制内容解码后均与原内容相等。"
+          }
+        },
+        {
+          "id": "BC-REMOTE-FILE-001-PATH",
+          "kind": "variant",
+          "rule": "文件路径不是绝对路径时，系统拒绝请求并返回参数错误。",
+          "outcome": "调用方得到参数错误，不会基于相对路径读写文件。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"相对路径被拒绝\"",
+            "oracle": "相对路径请求被拒绝，错误码为 -32602。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "SC-LARGE-FILE-TRANSFER-001",
+      "status": "active",
+      "rule": "对持有有效 token 的直连 HTTPS 请求，系统以流式方式上传或下载绝对路径文件，并交付传输大小与 SHA-256 一致性结果。",
+      "document": {
+        "path": "docs/architecture/ARCHITECTURE.md",
+        "anchor": "传输大文件"
+      },
+      "intentEvidence": [
+        {
+          "path": "README.md",
+          "locator": "- 读写绝对路径文件，以及通过 HTTPS 流式上传和下载大文件。"
+        }
+      ],
+      "currentEvidence": [
+        {
+          "path": "src/daemon/files.js",
+          "locator": "function handleUpload(req, res)"
+        },
+        {
+          "path": "src/daemon/files.js",
+          "locator": "function handleDownload(req, res)"
+        }
+      ],
+      "behaviors": [
+        {
+          "id": "BC-LARGE-FILE-TRANSFER-001-NORMAL",
+          "kind": "normal",
+          "rule": "上传后下载同一大文件时，系统交付与上传文件一致的 SHA-256。",
+          "outcome": "调用方获得完整且可由 SHA-256 验证的大文件副本。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"上传/下载 100MB 大文件\"",
+            "oracle": "上传返回的 SHA-256 和下载文件的 SHA-256 均等于源文件 SHA-256。"
+          }
+        },
+        {
+          "id": "BC-LARGE-FILE-TRANSFER-001-AUTH",
+          "kind": "variant",
+          "rule": "上传请求缺少有效 token 时，系统拒绝请求并返回 HTTP 401。",
+          "outcome": "未认证调用方不能写入远程文件。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"上传无 token 被 401 拒绝\"",
+            "oracle": "未携带 token 的上传请求返回 HTTP 401。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "SC-RELAY-001",
+      "status": "active",
+      "rule": "对持有有效 token 且目标满足 relay 白名单的请求，系统经单跳网关向目标 daemon 转发允许的 RPC 方法，并交付目标结果信封。",
+      "document": {
+        "path": "docs/architecture/ARCHITECTURE.md",
+        "anchor": "经网关转发请求"
+      },
+      "intentEvidence": [
+        {
+          "path": "README.md",
+          "locator": "- 通过单跳 relay 网关访问同一内网中的多个 daemon。"
+        }
+      ],
+      "currentEvidence": [
+        {
+          "path": "src/daemon/relay.js",
+          "locator": "function createRelayHandler(relayAllow = DEFAULT_RELAY_ALLOW)"
+        }
+      ],
+      "behaviors": [
+        {
+          "id": "BC-RELAY-001-NORMAL",
+          "kind": "normal",
+          "rule": "允许目标上的命令正常结束时，系统交付 `relayed: true` 和目标命令结果。",
+          "outcome": "调用方获得网关封装的目标命令成功结果。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"relay exec 成功（信封透传）\"",
+            "oracle": "结果的 relayed 为 true、目标退出码为 0，且标准输出包含 relay-ok。"
+          }
+        },
+        {
+          "id": "BC-RELAY-001-ALLOWLIST",
+          "kind": "variant",
+          "rule": "目标不在 relay 白名单时，系统拒绝请求并返回 RPC 错误 `-32010`。",
+          "outcome": "调用方不能借由网关访问未允许的公网目标。",
+          "test": {
+            "path": "test/integration/client.js",
+            "locator": "await test(\"relay 公网目标被白名单拒绝 -32010\"",
+            "oracle": "公网目标请求被拒绝，错误码为 -32010。"
+          }
+        }
+      ]
+    }
+  ]
+}

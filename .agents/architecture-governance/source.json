@@ -1,0 +1,14 @@
+{
+  "release": {
+    "tag": "evolution-v0.65.0",
+    "commit": "87d36ad0d65bf1a3dfbc5853228127129de09a7b"
+  },
+  "agentEntryHash": "sha256:0365f5fac081df2c69f47d71102e9e7349ec0cf4a2594de75b491072c2079971",
+  "agentFileExisted": false,
+  "files": {
+    ".agents/architecture-governance/check-state.mjs": "sha256:72908fe47d295913545a8477fbc978b1754a6dbaa2fd66ac259d6c54e99b6f0f",
+    "docs/architecture/AGENTS.md": "sha256:2f8da61bd932c9870ca3e5156fd1616169cbafaf16b1ba436f4ff9c9abaea48c",
+    ".agents/skills/architecture-governance/SKILL.md": "sha256:5ebeafdc07c2b24695fab5104f664acf76806c627ba1bf10752028b80c6d4346",
+    ".agents/skills/system-constraint-governance/SKILL.md": "sha256:4aeae2520cbada5d8a49eec7eabbfa911cf7f1786bda442da890a15ef3d408c3"
+  }
+}

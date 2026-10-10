@@ -2,7 +2,7 @@
 "use strict";
 /**
  * remote-exec 极简 TUI：交互式远程命令执行。
- * 用法: node tui-client.js [主机名]     （不带参数则交互选择）
+ * 用法: node src/tui/app.js [主机名]     （不带参数则交互选择）
  * 会话命令: :host [名]  :cd 目录  :timeout 秒  :hosts  :q
  * 普通输入按 bash 命令在远端执行（cwd 跟随提示符），支持直连与 relay(via) 主机。
  */

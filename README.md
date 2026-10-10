@@ -84,7 +84,7 @@ chmod 600 .personal/token.txt .personal/token.sha256 .personal/certs/server.key
 TLS 监听示例：
 
 ```bash
-node server.js \
+node src/daemon/main.js \\
   --host 127.0.0.1 \
   --port 8791 \
   --cert .personal/certs/server.crt \
@@ -95,7 +95,7 @@ node server.js \
 远程内网监听示例：
 
 ```bash
-node server.js \
+node src/daemon/main.js \\
   --host 0.0.0.0 \
   --port 8791 \
   --cert .personal/certs/server.crt \
@@ -106,7 +106,7 @@ node server.js \
 仅限本机调试的明文模式：
 
 ```bash
-node server.js \
+node src/daemon/main.js \\
   --host 127.0.0.1 \
   --port 8791 \
   --insecure-http \
@@ -161,9 +161,9 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 TUI 客户端使用内置 `readline`，支持执行单条命令、切换主机、跟随日志和查看主机连通性。
 
 ```bash
-node tui-client.js gateway
-node tui-client.js
-node tui-client.js --list
+node src/tui/app.js gateway
+node src/tui/app.js
+node src/tui/app.js --list
 ```
 
 仓库中的 `rex.sh` 可作为全局命令入口：
@@ -186,7 +186,7 @@ node tui-client.js --list
 
 ### Node.js 客户端库
 
-`lib/client.js` 提供以下接口：
+`src/client/index.js` 提供以下接口：
 
 - `loadConfig()`：读取 `~/.config/remote-exec/hosts.json`。
 - `WssClient`：建立 TLS WebSocket 连接并调用协议方法。
@@ -274,7 +274,7 @@ relay 的默认约束：
 
 ## 远程部署
 
-daemon 可以部署为目标主机上的普通 Node.js 进程。最小文件集合为 `server.js`、`package.json` 和 `node_modules/ws`，也可以直接部署 npm 打包产物。
+daemon 可以部署为目标主机上的普通 Node.js 进程。最小文件集合为 `src/daemon/`、`package.json` 和 `node_modules/ws`，也可以直接部署 npm 打包产物。
 
 ```bash
 npm pack
@@ -303,7 +303,7 @@ npm test
 单独运行协议回归：
 
 ```bash
-node test-client.js \
+node test/integration/client.js \\
   --port 8791 \
   --token-file .personal/token.txt \
   --ca .personal/certs/server.crt
@@ -312,7 +312,7 @@ node test-client.js \
 单独运行畸形输入验证：
 
 ```bash
-node fuzz-client.js \
+node test/fuzz/client.js \\
   --port 8791 \
   --token-file .personal/token.txt \
   --ca .personal/certs/server.crt
@@ -322,7 +322,7 @@ node fuzz-client.js \
 
 | 路径 | 说明 |
 | --- | --- |
-| `server.js` | 保留兼容性的 daemon 启动入口 |
+| `src/daemon/main.js` | daemon 启动入口 |
 | `src/daemon/main.js` | daemon 参数解析、启动和生命周期 |
 | `src/daemon/http-server.js` | HTTP、HTTPS 和 WebSocket upgrade 入口 |
 | `src/daemon/rpc.js` | WebSocket 会话、RPC 分发和断连取消 |
@@ -334,13 +334,13 @@ node fuzz-client.js \
 | `src/client/websocket.js` | Node.js WSS 传输 |
 | `src/client/host.js` | 直连和单跳 relay 调用 |
 | `src/client/transfer.js` | HTTP 文件上传下载 |
-| `lib/client.js` | 保留 npm `main` 兼容路径 |
-| `src/tui/app.js` | 交互式终端客户端 |
-| `tui-client.js` | 保留兼容性的 TUI 启动入口 |
+| `src/client/index.js` | Node.js 公共客户端入口 |
+| `src/tui/app.js` | 交互式终端客户端入口 |
+| `src/tui/app.js` | 交互式终端客户端入口 |
 | `pi-extension/remote-exec.ts` | Pi 工具扩展和 Pi 专属传输适配 |
 | `test/integration/` | 协议、认证、执行、文件和 relay 回归测试 |
 | `test/fuzz/` | WebSocket 畸形输入验证 |
-| `test-runner.js` | 保留兼容性的测试启动入口 |
+| `test/integration/runner.js` | 测试环境编排和临时凭证生成 |
 | `SECURITY.md` | 安全边界与漏洞报告政策 |
 
 运行时依赖方向保持单向：daemon 不依赖 client，TUI 依赖 Node client，Pi extension 保持独立，集成测试通过外部进程验证 daemon，不复用生产传输实现。

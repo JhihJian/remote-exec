@@ -3,9 +3,9 @@
 /**
  * remote-exec 自测客户端
  * 复用 ~/bin/codex-remote-run.js 的手写 WSS 客户端逻辑（TLS + RFC6455 帧 + JSON 消息），
- * 对本机 server.js 做端到端验证。
+ * 对本机 src/daemon/main.js 做端到端验证。
  *
- * 用法: node test-client.js --port 8791 --token-file .personal/token.txt --ca .personal/certs/server.crt
+ * 用法: node test/integration/client.js --port 8791 --token-file .personal/token.txt --ca .personal/certs/server.crt
  */
 
 const tls = require("tls");
@@ -431,7 +431,7 @@ async function main() {
     fs.writeFileSync(tSha, crypto.createHash("sha256").update(tToken).digest("hex"));
     const tProc = spawnProc(
       process.execPath,
-      [pathMod.join(__dirname, "..", "..", "server.js"), "--host", "127.0.0.1", "--port", String(tPort), "--cert", tCrt, "--key", tKey, "--token-sha256-file", tSha],
+      [pathMod.join(__dirname, "..", "..", "src", "daemon", "main.js"), "--host", "127.0.0.1", "--port", String(tPort), "--cert", tCrt, "--key", tKey, "--token-sha256-file", tSha],
       { stdio: "ignore" },
     );
     const tOpts = { host: "127.0.0.1", port: tPort, servername: "127.0.0.1", ca: tCrt };

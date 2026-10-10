@@ -22,7 +22,7 @@ async function main() {
   try {
     createCredentials({ cert, key, tokenFile, tokenSha });
     server = spawn(process.execPath, [
-      path.join(root, "server.js"),
+      path.join(root, "src", "daemon", "main.js"),
       "--host", "127.0.0.1",
       "--port", "0",
       "--cert", cert,

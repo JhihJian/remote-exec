@@ -5,4 +5,4 @@
 #   rex hosts        列出全部主机并探测连通延迟
 set -e
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec node "$SCRIPT_DIR/tui-client.js" "$@"
+exec node "$SCRIPT_DIR/src/tui/app.js" "$@"

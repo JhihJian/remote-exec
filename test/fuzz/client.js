@@ -7,7 +7,7 @@
  *   2. 非法 opcode
  *   3. 随机垃圾字节
  * 预期：服务端立即断开连接、进程存活、内存稳定。
- * 用法: node fuzz-client.js --host 127.0.0.1 --port 8791 --token-file .personal/token.txt --ca .personal/certs/server.crt
+ * 用法: node test/fuzz/client.js --host 127.0.0.1 --port 8791 --token-file .personal/token.txt --ca .personal/certs/server.crt
  */
 
 const tls = require("tls");

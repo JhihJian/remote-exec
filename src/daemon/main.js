@@ -27,8 +27,8 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`用法: node server.js --port 8791 --cert <crt> --key <key> --token-sha256-file <file>
-      node server.js --host 127.0.0.1 --insecure-http --token-sha256-file <file>
+  console.log(`用法: node src/daemon/main.js --port 8791 --cert <crt> --key <key> --token-sha256-file <file>
+      node src/daemon/main.js --host 127.0.0.1 --insecure-http --token-sha256-file <file>
       可选 --relay-allow <cidr>（可重复，默认仅允许回环 + RFC1918 私网，禁止转发公网）
 
 依赖: npm install ws （打包部署时随 node_modules/ws 一起传输）`);

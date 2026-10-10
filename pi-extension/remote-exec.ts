@@ -10,7 +10,7 @@
  * 注入系统提示词，让模型知道有哪些主机及使用规则。
  *
  * 客户端为零依赖手写实现（pi 的虚拟模块环境没有 ws），与 daemon 协议一一对应，
- * 协议行为参考仓库中的 test-client.js。
+ * 协议行为参考仓库中的 test/integration/client.js。
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

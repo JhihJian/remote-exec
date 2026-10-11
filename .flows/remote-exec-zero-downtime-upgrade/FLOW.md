@@ -6,8 +6,10 @@ description: 适用于需要先验证备用 generation、执行连接排空并�
 ```mermaid
 flowchart TD
   start((开始)) --> baseline[确认运行基线]
-  baseline -->|基线完整| parallel{{并行}}
+  baseline -->|基线完整| bootstrap[判断单入口 bootstrap]
   baseline -->|基线缺失| finish((结束))
+  bootstrap -->|入口已预部署| parallel{{并行}}
+  bootstrap -->|首次安装需受控切换| finish
   parallel --> xiaomi[验证测试环境]
   parallel --> package[验证候选版本]
   xiaomi -->|已执行| merge[汇总测试结果]
@@ -36,6 +38,22 @@ flowchart TD
 
 存在会影响升级安全性的未确认事实，停止流程并补齐基线。
 
+## 判断单入口 bootstrap
+
+```新建Agent
+确认目标设备只有现有 remote-exec 入口时的升级前提：入口所有者是否已经预部署并持有固定端口，daemon generation 是否只使用本机回环端口，是否存在本地控制或父子进程交接能力，以及首次安装是否需要一次受控断连。若入口尚未预部署且业务要求首次安装零断连，明确当前系统无法满足并停止流程。若接受受控 bootstrap，记录维护窗口和回滚材料。
+输入：
+{outcome}
+```
+
+### 入口已预部署
+
+稳定入口已经接管固定端口，可以进入 xiaomi 和候选版本的并行验证。
+
+### 首次安装需受控切换
+
+当前系统尚未具备单入口热升级基础能力，实施前需要确认一次受控断连窗口。
+
 ## 验证测试环境
 
 ```执行自定义命令
@@ -48,7 +66,7 @@ flowchart TD
 
 ### 已执行
 
-测试环境具备独立端口、独立凭据和可回滚条件。
+测试环境使用独立固定入口、独立回环 generation 端口、独立凭据和可回滚材料，不依赖目标设备具备 SSH 或额外外部端口。
 
 ## 验证候选版本
 
@@ -100,7 +118,7 @@ flowchart TD
 ## 逐节点灰度切换
 
 ```新建Agent
-按 xiaomi、NM105、nm108 的顺序执行灰度升级。每个节点先备用端口验证，再切换代理新连接路由，观察活动请求和错误率，保留旧 generation。NM105 与 nm108 不同时切换。任一门禁失败立即把新连接路由回旧 generation。
+按 xiaomi、NM105、nm108 的顺序灰度升级。目标设备只使用现有外部入口，generation 运行在本机回环端口。入口切换只影响新连接，旧 generation 继续 drain。NM105 与 nm108 不同时切换。任一门禁失败立即把新连接路由回旧 generation。
 输入：
 {outcome}
 ```

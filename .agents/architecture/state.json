@@ -15,7 +15,7 @@
       "evidence": [
         {
           "path": "README.md",
-          "locator": "面向受信任 Linux 主机的轻量远程执行 daemon。它通过 TLS、Bearer token 和 JSON-RPC 风格协议提供以下能力："
+          "locator": "remote-exec 的主要能力之一，是在"
         }
       ]
     },
@@ -151,7 +151,7 @@
       "evidence": [
         {
           "path": "package.json",
-          "locator": "\"test\": \"npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:integration\""
+          "locator": "\"test\": \"npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:upgrade && npm run test:integration\""
         },
         {
           "path": "test/integration/runner.js",

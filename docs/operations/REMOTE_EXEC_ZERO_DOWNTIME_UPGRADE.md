@@ -1,6 +1,17 @@
 # remote-exec 单入口无中断升级方案
 
-## 目标与硬约束
+## 只保留一条发布约束
+
+在稳定入口已经建立的设备上，升级 daemon 时，已接受的操作继续执行并交付结果，新请求持续可用；候选版本未通过验证或发布失败时，系统保持或恢复到可用版本。
+
+这条约束只依赖三条规则：
+
+1. 稳定入口长期持有唯一外部端口。
+2. 候选版本先通过真实 `/readyz`、TLS 和协议验证，再切换新连接。
+3. 旧版本保留到回滚窗口关闭且连接归零，再执行 `retire`。
+
+发布门禁是 [`test/upgrade/upgrade.js`](../../test/upgrade/upgrade.js)。它连续执行两轮真实 TLS 升级，验证在途操作、新连接、候选失败、rollback 和旧进程清理。任何一步失败都保持旧 generation active。
+
 
 目标设备只开放现有 remote-exec TLS/WSS 入口，设备可能没有 SSH、备用 TCP 端口或其他管理面。xiaomi 具备免密 SSH，只用于隔离实验和验证升级机制，不能作为目标设备正式升级或回滚的依赖。
 
@@ -109,7 +120,8 @@ daemon 必须跟踪：
 9. 活动资源归零后停止旧 generation。
 10. 保留旧版本、旧日志和旧启动配置，直到观察窗口结束。
 
-入口控制操作优先使用本机 Unix socket 或父子进程控制通道，不新增对外 TCP 管理端口。升级命令不能关闭承载当前控制连接的入口组件。
+supervisor 通过 Unix socket 提供 `status`、`register`、`start`、`promote`、`drain`、`rollback` 和 `retire`。`register/start` 创建 candidate，不接收新连接；`promote` 先检查候选 `/readyz`，成功后才切换；切换后的旧 generation 保持 draining，直到回滚窗口关闭并且活动连接归零，发布流程显式调用 `retire` 回收它。
+
 
 ## xiaomi 隔离验证
 

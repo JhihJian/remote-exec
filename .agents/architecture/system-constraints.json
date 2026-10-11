@@ -195,6 +195,55 @@
           }
         }
       ]
+    },
+    {
+      "id": "SC-ZERO-DOWNTIME-UPGRADE-001",
+      "status": "active",
+      "rule": "在稳定入口已经建立的设备上，升级 daemon 时，已接受的操作继续执行并交付结果，新请求持续可用；候选版本未通过验证或发布失败时，系统保持或恢复到可用版本。",
+      "document": {
+        "path": "docs/architecture/ARCHITECTURE.md",
+        "anchor": "单一外部端口无中断升级"
+      },
+      "intentEvidence": [
+        {
+          "path": "README.md",
+          "locator": "remote-exec 的主要能力之一，是在"
+        }
+      ],
+      "currentEvidence": [
+        {
+          "path": "src/supervisor/supervisor.js",
+          "locator": "async function promote(name)"
+        },
+        {
+          "path": "src/daemon/lifecycle.js",
+          "locator": "function createLifecycle"
+        }
+      ],
+      "behaviors": [
+        {
+          "id": "BC-ZERO-DOWNTIME-UPGRADE-001-NORMAL",
+          "kind": "normal",
+          "rule": "候选版本通过真实 `/readyz`、TLS 和协议验证后，入口才把新连接切换过去；已有连接保持原 generation。",
+          "outcome": "升级期间既有命令、流式调用和文件传输完成，新连接持续成功。",
+          "test": {
+            "path": "test/upgrade/upgrade.js",
+            "locator": "console.log(`PASS ${old.name}->${nextLabel} 切换时 exec / exec.stream / relay.stream / 上传",
+            "oracle": "连续两轮切换中，在途操作结果完整、持续新连接成功、旧版本排空后才 retire。"
+          }
+        },
+        {
+          "id": "BC-ZERO-DOWNTIME-UPGRADE-001-VARIANT",
+          "kind": "variant",
+          "rule": "候选版本启动失败、ready 失败或 TLS 验证失败时，系统保持当前 active 版本。",
+          "outcome": "候选发布失败不会造成入口中断，调用方仍可使用当前版本。",
+          "test": {
+            "path": "test/upgrade/upgrade.js",
+            "locator": "PASS ready=404 / TLS 不受信任 / spawn ENOENT 均保持 active=v1",
+            "oracle": "三类候选失败后 active 仍为 v1，新的 exec 请求继续返回 v1。"
+          }
+        }
+      ]
     }
   ]
 }

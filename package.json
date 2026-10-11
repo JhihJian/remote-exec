@@ -7,13 +7,14 @@
     "remote-exec": "src/daemon/main.js"
   },
   "scripts": {
-    "check": "node --check src/daemon/main.js && node --check src/daemon/http-server.js && node --check src/daemon/rpc.js && node --check src/daemon/security.js && node --check src/daemon/exec.js && node --check src/daemon/files.js && node --check src/daemon/lifecycle.js && node --check src/daemon/relay.js && node --check src/client/index.js && node --check src/client/config.js && node --check src/client/websocket.js && node --check src/client/host.js && node --check src/client/transfer.js && node --check src/tui/app.js && node --check src/supervisor/main.js && node --check src/supervisor/supervisor.js && node --check test/integration/client.js && node --check test/integration/runner.js && node --check test/fuzz/client.js && node --check test/supervisor/supervisor.js && node --check test/daemon/lifecycle.js",
+    "check": "node --check src/daemon/main.js && node --check src/daemon/http-server.js && node --check src/daemon/rpc.js && node --check src/daemon/security.js && node --check src/daemon/exec.js && node --check src/daemon/files.js && node --check src/daemon/lifecycle.js && node --check src/daemon/relay.js && node --check src/client/index.js && node --check src/client/config.js && node --check src/client/websocket.js && node --check src/client/host.js && node --check src/client/transfer.js && node --check src/tui/app.js && node --check src/supervisor/main.js && node --check src/supervisor/supervisor.js && node --check test/integration/client.js && node --check test/integration/runner.js && node --check test/fuzz/client.js && node --check test/supervisor/supervisor.js && node --check test/upgrade/upgrade.js && node --check test/daemon/lifecycle.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:extension": "node test/extension/timing.js",
     "test:supervisor": "node test/supervisor/supervisor.js",
+    "test:upgrade": "node test/upgrade/upgrade.js",
     "test:lifecycle": "node test/daemon/lifecycle.js",
     "test:integration": "node test/integration/runner.js",
-    "test": "npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:integration",
+    "test": "npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:upgrade && npm run test:integration",
     "start": "node src/daemon/main.js"
   },
   "keywords": [],

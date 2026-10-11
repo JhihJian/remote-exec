@@ -236,6 +236,13 @@ class WssClient {
 		});
 	}
 
+	abort(): void {
+		const error = new Error("连接已中断");
+		this.pending.forEach(({ reject }) => reject(error));
+		this.pending.clear();
+		this.socket?.destroy();
+	}
+
 	close(): void {
 		this.socket?.end();
 	}
@@ -243,7 +250,12 @@ class WssClient {
 
 /** 每次工具调用建立一个短连接（与 codex-remote-run 同模式，简单可靠）。
  * 目标带 via 时经网关 relay 转发：凭证（目标 token/CA）随请求携带，网关不存储。 */
-async function callHost<T>(hostName: string, method: string, params: Record<string, unknown>): Promise<T> {
+async function callHost<T>(
+	hostName: string,
+	method: string,
+	params: Record<string, unknown>,
+	onAbort?: (abort: () => void) => void,
+): Promise<T> {
 	const config = loadConfig();
 	const hosts = config?.hosts;
 	const host = hosts?.[hostName];
@@ -263,6 +275,7 @@ async function callHost<T>(hostName: string, method: string, params: Record<stri
 			token: targetToken,
 		});
 		try {
+			onAbort?.(() => client.abort());
 			await client.connect();
 			return await client.call<T>(method, params);
 		} finally {
@@ -283,6 +296,7 @@ async function callHost<T>(hostName: string, method: string, params: Record<stri
 		token: gatewayToken,
 	});
 	try {
+		onAbort?.(() => client.abort());
 		await client.connect();
 		const envelope = await client.call<{ relayed: boolean; result: T | null; error: { code: number; message: string } | null }>("relay", {
 			target: { host: host.host, port: host.port },
@@ -431,12 +445,20 @@ function unknownHostResult(err: unknown): string {
 	return `远程执行失败：${err instanceof Error ? err.message : String(err)}`;
 }
 
-async function remoteBash(host: string, command: string, cwd?: string, timeoutMs?: number): Promise<string> {
+async function remoteBash(host: string, command: string, cwd?: string, timeoutMs?: number, signal?: AbortSignal): Promise<string> {
+	let removeAbortListener = () => {};
 	try {
+		if (signal?.aborted) return "远程执行失败：连接已中断";
 		const r = await callHost<WssCallResult>(host, "exec", {
 			command,
 			cwd: cwd || undefined,
 			timeoutMs: timeoutMs || undefined,
+		}, (abort) => {
+			if (signal?.aborted) abort();
+			else {
+				signal?.addEventListener("abort", abort, { once: true });
+				removeAbortListener = () => signal?.removeEventListener("abort", abort);
+			}
 		});
 		const stdout = Buffer.from(r.stdoutB64, "base64").toString("utf8");
 		const stderr = Buffer.from(r.stderrB64, "base64").toString("utf8");
@@ -447,6 +469,8 @@ async function remoteBash(host: string, command: string, cwd?: string, timeoutMs
 		return parts.join("\n");
 	} catch (err) {
 		return unknownHostResult(err);
+	} finally {
+		removeAbortListener();
 	}
 }
 
@@ -521,7 +545,7 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 					timer.unref();
 					signal?.addEventListener("abort", stopTimer, { once: true });
 				}
-				const text = await remoteBash(params.host, params.command, params.cwd, params.timeoutMs);
+				const text = await remoteBash(params.host, params.command, params.cwd, params.timeoutMs, signal);
 				return { content: [{ type: "text", text }], details: { host: params.host, elapsedMs: elapsedMs() } };
 			} finally {
 				stopTimer();

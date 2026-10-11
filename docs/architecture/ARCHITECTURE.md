@@ -12,14 +12,17 @@ title remote-exec 组件图
 Person(caller, "调用方", "TUI、Node.js 程序或 Pi Agent")
 System_Boundary(remoteExec, "remote-exec") {
     Component(clientAdapters, "客户端适配层", "Node.js client、TUI、Pi extension", "加载主机配置，建立经证书校验的连接，投影调用结果")
-    Component(daemon, "Daemon 边界", "Node.js HTTP(S)/WSS 服务", "健康检查、TLS/Token 鉴权和入口协议处理")
+    Component(daemon, "Daemon generation", "Node.js HTTP(S)/WSS 服务", "健康检查、TLS/Token 鉴权、RPC 与文件处理")
+    Component(supervisor, "稳定入口 supervisor", "Node.js TCP 转发", "持有固定入口，按 generation 分配新连接并执行 drain/rollback")
     Component(rpc, "远程操作服务", "JSON-RPC", "命令执行、文件读写和单跳 relay")
     Component(fileTransfer, "大文件传输", "HTTPS", "流式上传、下载和 SHA-256 结果")
 }
 System_Ext(hostRuntime, "受管主机运行时", "bash、文件系统和进程组")
 System_Ext(relayTarget, "目标 daemon", "经受限内网访问")
 Rel(caller, clientAdapters, "调用", "CLI/Node API/Pi tools")
-Rel(clientAdapters, daemon, "直连或连接网关", "TLS + Bearer token + WSS/HTTPS")
+Rel(clientAdapters, daemon, "直连或经 supervisor 连接", "TLS + Bearer token + WSS/HTTPS")
+Rel(clientAdapters, supervisor, "连接固定入口", "原始 TCP")
+Rel(supervisor, daemon, "按 generation 转发新连接，保留旧连接", "本机 TCP")
 Rel(daemon, rpc, "鉴权后升级和分发", "WebSocket JSON")
 Rel(daemon, fileTransfer, "鉴权后路由", "HTTPS")
 Rel(rpc, hostRuntime, "执行或读写", "bash / 文件系统")
@@ -30,6 +33,7 @@ Rel(fileTransfer, hostRuntime, "流式读写", "文件系统")
 | 组件 | 职责 | 代码映射 |
 | --- | --- | --- |
 | Daemon 边界 | 解析启动参数，创建 HTTP(S) 服务，健康检查、认证和 WebSocket 升级 | `src/daemon/main.js`、`src/daemon/http-server.js`、`src/daemon/security.js` |
+| 稳定入口 supervisor | 持有固定 TCP 入口，管理 old/new generation，支持新连接切换、drain 和 rollback | `src/supervisor/main.js`、`src/supervisor/supervisor.js` |
 | 远程操作服务 | 分发 JSON-RPC，执行命令，读写文件，控制 relay 目标和流式背压 | `src/daemon/rpc.js`、`src/daemon/exec.js`、`src/daemon/files.js`、`src/daemon/relay.js` |
 | 大文件传输 | 处理直连 HTTPS 上传下载，不经 relay | `src/daemon/http-server.js`、`src/daemon/files.js` |
 | Node.js 客户端适配层 | 读取主机配置，建立 WSS 连接，编排直连或单跳 relay | `src/client/`，关键文件 `src/client/host.js` |
@@ -39,7 +43,9 @@ Rel(fileTransfer, hostRuntime, "流式读写", "文件系统")
 
 ## 稳定边界
 
-daemon 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器。
+daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器；固定入口 supervisor 通过原始 TCP 将新连接分配到 active generation。
+
+
 
 RPC 服务器只暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。
 

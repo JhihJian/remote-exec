@@ -87,7 +87,10 @@ function createSupervisor(options = {}) {
     if (target.state === "draining") target.state = "active";
     if (active && active !== name) {
       const previous = generations.get(active);
-      if (previous.state === "active") previous.state = "draining";
+      if (previous.state === "active") {
+        previous.state = "draining";
+        maybeStop(previous);
+      }
     }
     active = name;
     target.state = "active";
@@ -99,7 +102,15 @@ function createSupervisor(options = {}) {
     if (target.name === active) throw new Error("不能 drain 当前 active generation，请先 promote 另一个 generation");
     if (!target.backend) throw new Error(`${name} 没有已注册后端`);
     target.state = "draining";
+    maybeStop(target);
     return status();
+  }
+
+  function maybeStop(generation) {
+    if (generation.state !== "draining" || generation.connections.size !== 0) return;
+    if (generation.process && generation.process.exitCode === null) {
+      generation.process.kill("SIGTERM");
+    }
   }
 
   function rollback() {
@@ -143,11 +154,11 @@ function createSupervisor(options = {}) {
       return;
     }
     const upstream = net.connect(generation.backend);
-    generation.connections.add(client);
-    generation.connections.add(upstream);
+    const connection = { client, upstream };
+    generation.connections.add(connection);
     const remove = () => {
-      generation.connections.delete(client);
-      generation.connections.delete(upstream);
+      generation.connections.delete(connection);
+      maybeStop(generation);
     };
     client.once("close", remove);
     upstream.once("close", remove);
@@ -210,7 +221,10 @@ function createSupervisor(options = {}) {
     if (closing) return;
     closing = true;
     for (const generation of generations.values()) {
-      for (const connection of generation.connections) connection.destroy();
+      for (const connection of generation.connections) {
+        connection.client.destroy();
+        connection.upstream.destroy();
+      }
       if (generation.process && generation.process.exitCode === null) generation.process.kill("SIGTERM");
     }
     for (const socket of controlConnections) socket.destroy();

@@ -21,16 +21,20 @@
     },
     {
       "id": "daemon-entry-boundary",
-      "conclusion": "daemon 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器。",
+      "conclusion": "daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器；固定入口 supervisor 通过原始 TCP 将新连接分配到 active generation。",
       "documentRole": "overview",
       "evidence": [
         {
           "path": "src/daemon/http-server.js",
-          "locator": "if (req.url === \"/healthz\" || req.url === \"/readyz\")"
+          "locator": "if (req.url === \"/healthz\")"
         },
         {
           "path": "src/daemon/http-server.js",
           "locator": "wss.handleUpgrade(req, socket, head, (ws) => wss.emit(\"connection\", ws, req));"
+        },
+        {
+          "path": "src/supervisor/supervisor.js",
+          "locator": "const upstream = net.connect(generation.backend);"
         }
       ]
     },
@@ -147,7 +151,7 @@
       "evidence": [
         {
           "path": "package.json",
-          "locator": "\"test\": \"npm run check && npm run typecheck && npm run test:extension && npm run test:integration\""
+          "locator": "\"test\": \"npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:integration\""
         },
         {
           "path": "test/integration/runner.js",

@@ -25,6 +25,8 @@
 
 remote-exec 是高权限远程执行服务，适用范围由部署网络和 daemon 运行用户共同决定。
 
+需要在单一外部端口上进行后续版本升级时，可使用 `src/supervisor/` 提供的 TCP supervisor。supervisor 持有固定入口，daemon generation 只监听本机回环端口；切换只影响新 TCP 连接，旧连接继续由旧 generation 处理。
+
 - 有效 token 可以在 daemon 运行用户权限范围内执行 `bash -lc`，并读写该用户可访问的绝对路径。
 - 服务端只保存 token 的 SHA-256，不保存 token 明文。
 - TLS 模式用于远程监听；`--insecure-http` 仅允许回环地址。
@@ -274,7 +276,24 @@ relay 的默认约束：
 - 单网关 relay 并发上限为 8，连接预算和内层超时均有上限。
 - `via` 只支持一层，上传和下载需要直连目标主机。
 
-## 远程部署
+### TCP supervisor
+
+supervisor 只转发原始 TCP 字节，不终止 TLS，也不解析 HTTP、WebSocket 或 RPC。它通过 Unix domain socket 接收本机控制命令，支持 `status`、`register`、`start`、`promote`、`drain` 和 `rollback`。
+
+```bash
+node src/supervisor/main.js \
+  --host 127.0.0.1 \
+  --port 8791 \
+  --control /run/remote-exec/supervisor.sock \
+  --old-host 127.0.0.1 \
+  --old-port 18791
+```
+
+候选 generation 使用独立的本机回环端口。发布时先启动并验证候选版本，再执行 `promote`。已经建立的 TCP/WebSocket/HTTP 连接保持原后端，旧 generation 进入 drain 后等待活动连接结束。`rollback` 只恢复新连接的路由，状态未知的非幂等请求不能自动重放。
+
+supervisor 的控制 socket 不是远程管理端口，必须使用 0600 权限并由服务用户持有。首次把现有 daemon 迁移到 supervisor 需要受控切换窗口，后续版本升级才能复用无中断切换流程。
+
+
 
 daemon 可以部署为目标主机上的普通 Node.js 进程。最小文件集合为 `src/daemon/`、`package.json` 和 `node_modules/ws`，也可以直接部署 npm 打包产物。
 

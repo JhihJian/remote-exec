@@ -3,6 +3,7 @@
 
 const { DEFAULT_RELAY_ALLOW } = require("./constants.js");
 const { createServer } = require("./http-server.js");
+const { createLifecycle } = require("./lifecycle.js");
 const { loadTokenSha256, log } = require("./security.js");
 
 function parseArgs(argv) {
@@ -20,6 +21,8 @@ function parseArgs(argv) {
     else if (a === "--token-sha256-file") opts.tokenSha256File = next();
     else if (a === "--insecure-http") opts.insecureHttp = true;
     else if (a === "--relay-allow") (opts.relayAllow = opts.relayAllow || []).push(next());
+    else if (a === "--generation") opts.generation = next();
+    else if (a === "--drain-timeout-ms") opts.drainTimeoutMs = Number(next());
     else if (a === "-h" || a === "--help") opts.help = true;
     else throw new Error(`未知参数: ${a}`);
   }
@@ -53,13 +56,22 @@ function main(argv = process.argv.slice(2)) {
   validateOptions(opts);
   const tokenSha256 = loadTokenSha256(opts.tokenSha256File);
   const relayAllow = opts.relayAllow || DEFAULT_RELAY_ALLOW;
-  const server = createServer({ ...opts, relayAllow }, tokenSha256);
+  const lifecycle = createLifecycle({ drainTimeoutMs: opts.drainTimeoutMs });
+  const server = createServer({ ...opts, relayAllow, lifecycle }, tokenSha256);
   server.listen(opts.port, opts.host, () => {
+    lifecycle.markReady();
     const scheme = opts.insecureHttp ? "ws" : "wss";
     const address = server.address();
     const port = address && typeof address === "object" ? address.port : opts.port;
     log("listening", `${scheme}://${opts.host}:${port} (token 认证已启用, ws 库处理帧协议)`);
   });
+  const shutdown = async () => {
+    await lifecycle.beginDrain();
+    await new Promise((resolve) => server.close(resolve));
+    lifecycle.markStopped();
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
   return server;
 }
 

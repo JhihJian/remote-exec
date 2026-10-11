@@ -7,7 +7,7 @@ const { fileRead, fileWrite } = require("./files.js");
 const { createRelayHandler } = require("./relay.js");
 const { log, rpcError } = require("./security.js");
 
-function createRpcServer(relayAllow) {
+function createRpcServer(relayAllow, lifecycle) {
   const relayRequest = createRelayHandler(relayAllow);
   const methods = {
     exec: execCommand,
@@ -23,6 +23,12 @@ function createRpcServer(relayAllow) {
     log("ws.opened", peer);
     let queue = Promise.resolve();
     const inflight = new Set();
+    const releaseConnection = lifecycle?.acquire("websocket");
+    if (lifecycle && !releaseConnection) {
+      ws.close(1013, "draining");
+      return;
+    }
+    const removeForceCloser = lifecycle?.addForceCloser(() => ws.destroy());
     const sendJson = (msg) => new Promise((resolve, reject) => {
       if (ws.readyState !== ws.OPEN) {
         reject(new Error("连接已关闭"));
@@ -40,6 +46,12 @@ function createRpcServer(relayAllow) {
       }
       queue = queue
         .then(async () => {
+          if (lifecycle && !lifecycle.accepting()) {
+            throw rpcError(-32020, "daemon 正在排空，不再接受新的 RPC");
+          }
+          const releaseRequest = lifecycle?.acquire("rpc");
+          if (lifecycle && !releaseRequest) throw rpcError(-32020, "daemon 正在排空，不再接受新的 RPC");
+          try {
           if (!request || typeof request.method !== "string") throw rpcError(-32600, "请求需要 method 字段");
           const handler = methods[request.method];
           if (!handler) throw rpcError(-32601, `未知方法: ${request.method}`);
@@ -53,6 +65,9 @@ function createRpcServer(relayAllow) {
             },
           );
           return { id: request.id ?? null, result };
+          } finally {
+            releaseRequest?.();
+          }
         })
         .catch((err) => ({
           id: request.id ?? null,
@@ -63,6 +78,8 @@ function createRpcServer(relayAllow) {
 
     ws.on("error", (err) => log("ws.error", `${peer} ${err.message}`));
     ws.on("close", () => {
+      releaseConnection?.();
+      removeForceCloser?.();
       log("ws.closed", peer);
       if (inflight.size) {
         log("ws.cancel", `${peer} 终止 ${inflight.size} 个执行中的操作`);

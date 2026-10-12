@@ -12,7 +12,7 @@ remote-exec 的主要能力之一，是在**单一外部端口**的设备上进�
 
 ## 项目状态
 
-当前版本为 `1.0.1`，运行时依赖 Node.js 18 或更高版本，以及 `ws` 库。目标运行环境为 Linux，命令执行依赖 `bash`、`setsid` 等常见系统工具。
+当前版本为 `1.1.0`，运行时依赖 Node.js 18 或更高版本，以及 `ws` 库。目标运行环境为 Linux，命令执行依赖 `bash`、`setsid` 等常见系统工具。
 
 已验证的能力包括：
 
@@ -146,6 +146,7 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 | `exec.stream` | `command`、可选 `cwd`、`timeoutMs` | 多个 output 事件，最后返回退出码和字节数 |
 | `file.read` | 绝对路径 `file` | Base64 编码的文件内容，单次读取上限 64MB |
 | `file.write` | 绝对路径 `file`、Base64 编码的 `contentB64` | 写入字节数 |
+| `deploy.ssh` | SSH 指纹检查、暂存准备、SSH 安装和清理 | 经认证的网关部署结果与接入凭据 |
 | `relay` | `target`、`auth`、`request` | 目标 daemon 的结果或 relay 错误信封 |
 
 协议行为：
@@ -300,8 +301,8 @@ daemon 可以部署为目标主机上的普通 Node.js 进程。最小文件集�
 
 ```bash
 npm pack
-scp remote-exec-1.0.1.tgz user@host:~/
-ssh user@host 'mkdir -p ~/remote-exec && tar -xzf ~/remote-exec-1.0.1.tgz -C ~/remote-exec --strip-components=1'
+scp remote-exec-1.1.0.tgz user@host:~/
+ssh user@host 'mkdir -p ~/remote-exec && tar -xzf ~/remote-exec-1.1.0.tgz -C ~/remote-exec --strip-components=1'
 ssh user@host 'cd ~/remote-exec && npm install --omit=dev'
 ```
 
@@ -323,6 +324,19 @@ curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/inst
 
 安装成功后，客户端接入资料保存在 `/root/remote-exec-access.tar.gz`。服务只负责目标机上的安装和验收，防火墙、云安全组和客户端配置仍按网络环境配置。完整参数和失败处理见[一键安装方案](docs/operations/ONE_COMMAND_DEPLOYMENT_DESIGN.md)。
 
+
+## SSH 批量部署
+
+在客户端执行，直连模式可省略 `--via`：
+
+```bash
+rex deploy root@192.168.1.101
+rex deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.16.126.102
+```
+
+仓库内可用 `./rex.sh deploy ...`，全局命令可通过 `npm install -g .` 安装。部署前确认 SSH 指纹，先尝试免密 SSH，按需无回显询问 SSH 和 sudo 密码。运行包通过 SSH 传入目标，目标无需访问公网。验收通过后自动保存各机凭据、登记直连或 `via` 配置，失败目标不会登记。
+
+`--port` 默认 8791，支持 `--ssh-port`、`--identity`、`--package` 和 `--host-key`。经网关部署需要网关运行当前版本的 `deploy.ssh` 接口，目标 daemon 端口应对网关内网可达。详见 [SSH 批量部署](docs/operations/SSH_DEPLOYMENT.md)。
 
 ## 单一外部端口无中断升级
 
@@ -350,6 +364,7 @@ npm test
 - `npm run check`：检查 JavaScript 语法。
 - `npm run typecheck`：执行 TypeScript 类型检查。
 - `npm run test:extension`：验证 Pi 命令耗时更新、并行调用计时、结束后的定时器清理及结果渲染。
+- `npm run test:deploy`：使用真实 SSH、sudo 和 systemd 的隔离容器验证直连与网关批量部署，需要正式构建包和 Docker。
 - `npm run test:integration`：生成临时证书和 token，启动 daemon，运行端到端测试和畸形输入验证。
 
 单独运行协议回归：

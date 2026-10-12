@@ -86,12 +86,13 @@ PACKAGE_DIR="${BUILD_DIR}/package"
 NODE_DIR="${BUILD_DIR}/node"
 mkdir -p "$PACKAGE_DIR/src/daemon" "$PACKAGE_DIR/src/client" "$PACKAGE_DIR/packaging" "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/runtime/bin" "$NODE_DIR"
 
-cp -R --no-preserve=mode,ownership,links "$PROJECT_ROOT/src/daemon/." "$PACKAGE_DIR/src/daemon/"
-cp --no-preserve=mode,ownership,links "$PROJECT_ROOT/src/client/websocket.js" "$PACKAGE_DIR/src/client/websocket.js"
+cp -R --no-preserve=mode,ownership,links "$PROJECT_ROOT/src/." "$PACKAGE_DIR/src/"
+chmod 0755 "$PACKAGE_DIR/src/cli/main.js" "$PACKAGE_DIR/src/daemon/main.js"
 cp --no-preserve=mode,ownership,links "$PROJECT_ROOT/package.json" "$PROJECT_ROOT/package-lock.json" "$PACKAGE_DIR/"
 cp --no-preserve=mode,ownership,links "$PROJECT_ROOT/LICENSE" "$PACKAGE_DIR/LICENSE"
 cp --no-preserve=mode,ownership,links "$PROJECT_ROOT/packaging/remote-exec.service" "$PACKAGE_DIR/packaging/remote-exec.service"
 cp --no-preserve=mode,ownership,links "$PROJECT_ROOT/scripts/smoke.js" "$PACKAGE_DIR/scripts/smoke.js"
+cp --no-preserve=mode,ownership,links "$PROJECT_ROOT/scripts/install.sh" "$PACKAGE_DIR/scripts/install.sh"
 
 (
   cd "$PACKAGE_DIR"

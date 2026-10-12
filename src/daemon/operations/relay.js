@@ -172,4 +172,4 @@ function createRelayHandler(relayAllow = DEFAULT_RELAY_ALLOW) {
   };
 }
 
-module.exports = { createRelayHandler };
+module.exports = { createRelayHandler, relayAllowedByTarget };

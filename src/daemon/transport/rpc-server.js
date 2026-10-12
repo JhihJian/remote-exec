@@ -5,6 +5,7 @@ const { MAX_PAYLOAD } = require("../shared/constants.js");
 const { execCommand, execStreamCommand } = require("../operations/exec.js");
 const { fileRead, fileWrite } = require("../operations/files.js");
 const { createRelayHandler } = require("../operations/relay.js");
+const { createSshDeployHandler } = require("../operations/deploy.js");
 const { log } = require("../shared/log.js");
 const { rpcError } = require("../shared/rpc-error.js");
 
@@ -16,6 +17,7 @@ function createRpcServer(relayAllow, lifecycle) {
     "file.read": fileRead,
     "file.write": fileWrite,
     relay: relayRequest,
+    "deploy.ssh": createSshDeployHandler(relayAllow),
   };
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 

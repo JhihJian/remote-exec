@@ -43,17 +43,26 @@ function makePackage(root) {
     const bytes = fs.readFileSync(process.env.INSTALL_PACKAGE);
     const checksum = fs.readFileSync(`${process.env.INSTALL_PACKAGE}.sha256`, "utf8").trim().split(/\s+/)[0];
     if (checksum !== crypto.createHash("sha256").update(bytes).digest("hex")) throw new Error("正式包与构建校验文件不一致");
-    return { bytes, checksum };
+    return { archive: path.resolve(process.env.INSTALL_PACKAGE), bytes, checksum };
   }
   const packageRoot = path.join(root, "package");
   fs.mkdirSync(packageRoot, { recursive: true });
   fs.cpSync(path.join(projectRoot, "src"), path.join(packageRoot, "src"), { recursive: true });
   fs.cpSync(path.join(projectRoot, "scripts/smoke.js"), path.join(packageRoot, "scripts/smoke.js"));
+  fs.cpSync(path.join(projectRoot, "scripts/install.sh"), path.join(packageRoot, "scripts/install.sh"));
+  fs.cpSync(path.join(projectRoot, "scripts/install.sh"), path.join(packageRoot, "scripts/install.sh"));
   fs.cpSync(path.join(projectRoot, "packaging/remote-exec.service"), path.join(packageRoot, "packaging/remote-exec.service"));
   fs.cpSync(path.join(projectRoot, "package.json"), path.join(packageRoot, "package.json"));
-  const wsSource = path.join(projectRoot, "node_modules/ws");
-  if (!fs.existsSync(wsSource)) throw new Error("找不到 ws 依赖，请先执行 npm ci");
-  fs.cpSync(wsSource, path.join(packageRoot, "node_modules/ws"), { recursive: true });
+  const copiedDependencies = new Set();
+  function copyDependency(dependency) {
+    if (copiedDependencies.has(dependency)) return;
+    copiedDependencies.add(dependency);
+    const source = path.dirname(require.resolve(`${dependency}/package.json`));
+    fs.cpSync(source, path.join(packageRoot, "node_modules", dependency), { recursive: true });
+    const metadata = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+    for (const child of Object.keys(metadata.dependencies || {})) copyDependency(child);
+  }
+  for (const dependency of Object.keys(JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")).dependencies)) copyDependency(dependency);
   fs.mkdirSync(path.join(packageRoot, "runtime/bin"), { recursive: true });
   fs.copyFileSync(process.execPath, path.join(packageRoot, "runtime/bin/node"));
   fs.chmodSync(path.join(packageRoot, "runtime/bin/node"), 0o755);
@@ -119,6 +128,10 @@ case "$1" in
 esac
 `);
   fs.writeFileSync(path.join(bin, "curl"), `#!/usr/bin/env bash
+if [[ -e /run/fixture/offline ]]; then
+  echo 'curl called in local package mode' >>/run/fixture/unexpected-network
+  exit 1
+fi
 args=()
 for arg in "$@"; do
   case "$arg" in
@@ -167,6 +180,7 @@ expect_fail bash /tmp/install.sh --port 0
 expect_fail bash /tmp/install.sh --address '-bad'
 expect_fail bash /tmp/install.sh --run-user nobody
 expect_fail bash /tmp/install.sh --unknown value
+expect_fail run_install --source "$SOURCE_URL" --package /tmp/local-package/package.tar.gz
 head -n -1 /tmp/install.sh >/tmp/truncated-install.sh
 bash /tmp/truncated-install.sh --address 127.0.0.1 --port "$SERVICE_PORT" --run-user root --source "$SOURCE_URL" >/tmp/truncated.out 2>&1
 [[ ! -e /opt/remote-exec ]] || { echo '截断脚本执行了安装入口' >&2; exit 1; }
@@ -197,13 +211,33 @@ run_install
 [[ "$pid_before" == "$(cat /run/fixture/remote-exec.pid)" ]] || { echo '相同命令重跑改变了 PID' >&2; exit 1; }
 [[ "$token_after" == "$(cat /root/remote-exec-access/token.txt)" ]] || { echo '相同命令重跑改变了 token' >&2; exit 1; }
 
-# 停止服务后再次安装必须恢复服务。
-systemctl disable --now remote-exec.service
-[[ ! -e /run/fixture/remote-exec.pid ]] || { echo 'stop 后 daemon 仍存活' >&2; exit 1; }
-run_install
-systemctl is-active --quiet remote-exec.service
+# 停止服务后使用本地包重装：缺少校验文件或校验错误都不能覆盖既有安装。
 [[ "$(grep -c 'releases/latest$' /run/fixture/downloads)" == 1 ]]
 grep -q 'releases/download/v' /run/fixture/downloads
+systemctl disable --now remote-exec.service
+[[ ! -e /run/fixture/remote-exec.pid ]] || { echo 'stop 后 daemon 仍存活' >&2; exit 1; }
+local_hash=$(sha256sum /opt/remote-exec/install.json)
+local_token=$(cat /root/remote-exec-access/token.txt)
+local_downloads=$(wc -l </run/fixture/downloads)
+touch /run/fixture/offline
+mv /tmp/local-package/package.tar.gz.sha256 /tmp/local-package/package.tar.gz.sha256.disabled
+expect_fail run_install --package /tmp/local-package/package.tar.gz
+[[ "$local_hash" == "$(sha256sum /opt/remote-exec/install.json)" ]] || { echo '缺少本地 hash 改写了安装目录' >&2; exit 1; }
+mv /tmp/local-package/package.tar.gz.sha256.disabled /tmp/local-package/package.tar.gz.sha256
+printf '%064d  package.tar.gz\n' 0 >/tmp/local-package/package.tar.gz.sha256
+expect_fail run_install --package /tmp/local-package/package.tar.gz
+[[ "$local_hash" == "$(sha256sum /opt/remote-exec/install.json)" ]] || { echo '错误本地 hash 改写了安装目录' >&2; exit 1; }
+printf '%s  package.tar.gz\n' "$(sha256sum /tmp/local-package/package.tar.gz | awk '{print $1}')" >/tmp/local-package/package.tar.gz.sha256
+run_install --package /tmp/local-package/package.tar.gz
+systemctl is-active --quiet remote-exec.service
+local_pid=$(cat /run/fixture/remote-exec.pid)
+(cd /tmp/local-package && run_install --package ./package.tar.gz)
+[[ "$local_pid" == "$(cat /run/fixture/remote-exec.pid)" ]] || { echo '本地包重跑改变了 PID' >&2; exit 1; }
+[[ "$local_hash" == "$(sha256sum /opt/remote-exec/install.json)" ]] || { echo '本地重装改写了安装配置' >&2; exit 1; }
+[[ ! -e /run/fixture/unexpected-network ]] || { echo '本地包模式调用了 curl' >&2; exit 1; }
+rm /run/fixture/offline
+[[ "$local_token" == "$(cat /root/remote-exec-access/token.txt)" ]] || { echo '本地重装轮换了 token' >&2; exit 1; }
+[[ "$local_downloads" == "$(wc -l </run/fixture/downloads)" ]] || { echo '本地包模式访问了网络下载' >&2; exit 1; }
 
 # smoke 使用错误 token 必须被真实 WSS 服务拒绝。
 printf '%s\n' wrong-token >/tmp/wrong-token
@@ -272,6 +306,10 @@ async function main() {
   try {
     makeRoot(root);
     const source = makePackage(root);
+    const localPackageDir = path.join(root, "tmp/local-package");
+    fs.mkdirSync(localPackageDir, { recursive: true });
+    fs.copyFileSync(source.archive, path.join(localPackageDir, "package.tar.gz"));
+    fs.writeFileSync(path.join(localPackageDir, "package.tar.gz.sha256"), `${source.checksum}  package.tar.gz\n`);
     const certificate = makeCertificate(root);
     const badBytes = Buffer.concat([source.bytes, Buffer.from("corrupt")]);
     let interruptedDownload = false;

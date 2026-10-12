@@ -1,18 +1,20 @@
 {
   "name": "remote-exec",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "面向受信任 Linux 主机的轻量 WSS 远程执行 daemon，支持 Pi agent 接入和单跳 relay。",
   "main": "src/client/index.js",
   "bin": {
-    "remote-exec": "src/daemon/main.js"
+    "remote-exec": "src/daemon/main.js",
+    "rex": "src/cli/main.js"
   },
   "scripts": {
-    "check": "node --check src/daemon/main.js && node --check src/daemon/transport/http-server.js && node --check src/daemon/transport/rpc-server.js && node --check src/daemon/transport/file-transfer.js && node --check src/daemon/shared/auth.js && node --check src/daemon/shared/log.js && node --check src/daemon/shared/rpc-error.js && node --check src/daemon/shared/constants.js && node --check src/daemon/operations/exec.js && node --check src/daemon/operations/files.js && node --check src/daemon/lifecycle.js && node --check src/daemon/operations/relay.js && node --check src/client/index.js && node --check src/client/config.js && node --check src/client/websocket.js && node --check src/client/host.js && node --check src/client/transfer.js && node --check src/tui/app.js && node --check src/supervisor/main.js && node --check src/supervisor/supervisor.js && node --check test/integration/client.js && node --check test/integration/runner.js && node --check test/fuzz/client.js && node --check test/supervisor/supervisor.js && node --check test/upgrade/upgrade.js && node --check test/daemon/lifecycle.js && node --check scripts/smoke.js && node --check test/install/runner.js && bash -n scripts/install.sh && bash -n scripts/build-release.sh",
+    "check": "node --check src/daemon/main.js && node --check src/daemon/transport/http-server.js && node --check src/daemon/transport/rpc-server.js && node --check src/daemon/transport/file-transfer.js && node --check src/daemon/shared/auth.js && node --check src/daemon/shared/log.js && node --check src/daemon/shared/rpc-error.js && node --check src/daemon/shared/constants.js && node --check src/daemon/operations/exec.js && node --check src/daemon/operations/files.js && node --check src/daemon/lifecycle.js && node --check src/daemon/operations/relay.js && node --check src/client/index.js && node --check src/client/config.js && node --check src/client/websocket.js && node --check src/client/host.js && node --check src/client/transfer.js && node --check src/tui/app.js && node --check src/supervisor/main.js && node --check src/supervisor/supervisor.js && node --check test/integration/client.js && node --check test/integration/runner.js && node --check test/fuzz/client.js && node --check test/supervisor/supervisor.js && node --check test/upgrade/upgrade.js && node --check test/daemon/lifecycle.js && node --check scripts/smoke.js && node --check test/install/runner.js && node --check src/cli/main.js && node --check src/deploy/ssh.js && node --check src/deploy/cli.js && node --check src/deploy/bundle.js && node --check src/deploy/config-store.js && node --check src/deploy/prompts.js && node --check src/daemon/operations/deploy.js && node --check test/deploy/runner.js && bash -n scripts/install.sh && bash -n scripts/build-release.sh",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:extension": "node test/extension/timing.js",
     "test:supervisor": "node test/supervisor/supervisor.js",
     "test:upgrade": "node test/upgrade/upgrade.js",
     "test:lifecycle": "node test/daemon/lifecycle.js",
+    "test:deploy": "node test/deploy/runner.js",
     "test:install": "node test/install/runner.js",
     "test:integration": "node test/integration/runner.js",
     "test": "npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:upgrade && npm run test:install && npm run test:integration",
@@ -30,12 +32,16 @@
     "LICENSE",
     "SECURITY.md",
     "src/",
+    "scripts/install.sh",
+    "scripts/smoke.js",
+    "packaging/remote-exec.service",
     "rex.sh",
     "pi-extension/remote-exec.ts",
     "pi-extension/pi-coding-agent.d.ts",
     "tsconfig.json"
   ],
   "dependencies": {
+    "ssh2": "^1.17.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {

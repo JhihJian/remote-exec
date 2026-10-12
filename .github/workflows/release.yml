@@ -44,6 +44,11 @@ jobs:
           docker build -t remote-exec-install-systemd:test test/install
           npm run test:install
 
+      - name: Verify SSH direct and gateway deployment
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/remote-exec-linux-x64.tar.gz
+        run: npm run test:deploy
+
       - name: Check tag version
         if: startsWith(github.ref, 'refs/tags/')
         env:

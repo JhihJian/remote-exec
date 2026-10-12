@@ -28,6 +28,7 @@ class WssClient {
       });
       this.buf = Buffer.alloc(0);
       this.upgraded = false;
+      req.setTimeout(15000, () => req.destroy(new Error("TLS/WSS 连接超时")));
       req.on("data", (chunk) => this.onData(chunk, resolve, reject));
       req.on("error", (err) => {
         if (!this.upgraded) reject(err);
@@ -52,6 +53,7 @@ class WssClient {
         return;
       }
       this.upgraded = true;
+      this.socket.setTimeout(0);
       this.buf = this.buf.subarray(i + 4);
       resolve();
     }

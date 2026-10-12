@@ -28,10 +28,12 @@ flowchart TB
             exec["exec.js<br/>命令进程与输出"]
             files["files.js<br/>文件 RPC 读写"]
             relay["relay.js<br/>目标限制与单跳转发"]
+            deploy["deploy.js<br/>SSH 安装请求与网关暂存"]
         end
         subgraph foundation["基础支持"]
             lifecycle["lifecycle.js · 根目录<br/>就绪 · 资源计数 · 排空"]
             shared["shared/<br/>auth.js · log.js<br/>rpc-error.js · constants.js"]
+            ssh["src/deploy/ssh.js · 跨进程复用<br/>SSH 验证 · SFTP · 安装与凭据回收"]
         end
         main -->|创建并监听服务| http
         main -->|创建协调器、发起排空| lifecycle
@@ -40,6 +42,8 @@ flowchart TB
         rpc -->|exec / exec.stream| exec
         rpc -->|file.read / file.write| files
         rpc -->|relay| relay
+        rpc -->|deploy.ssh| deploy
+        deploy -->|委托目标 SSH 安装| ssh
         http -->|HTTP 接纳检查与计数| lifecycle
         rpc -->|连接与请求计数、注册强制关闭| lifecycle
         operations ~~~ foundation
@@ -64,6 +68,8 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 | 远程操作：`files.js` | 文件 RPC 读写 | `src/daemon/operations/files.js` |
 | 远程操作：`relay.js` | 目标限制、目标连接和单跳转发 | `src/daemon/operations/relay.js` |
 | 基础支持：`lifecycle.js` | 就绪状态、资源计数、排空和清理回调协调 | `src/daemon/lifecycle.js` |
+| SSH 部署操作 | 验证网关允许网段，管理暂存包，调用 SSH 安装引擎 | `src/daemon/operations/deploy.js` |
+| SSH 安装引擎 | 验证主机指纹、SSH 认证、SFTP、sudo 与安装凭据回收 | `src/deploy/ssh.js`，客户端与网关各自执行 |
 | 基础支持：`shared/` | Token 验证、日志、RPC 错误、限额与默认配置 | `src/daemon/shared/`，关键文件 `auth.js`、`log.js`、`rpc-error.js`、`constants.js` |
 
 进程外的入口与调用方映射如下：
@@ -73,6 +79,7 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 | 稳定入口 supervisor | 持有固定 TCP 入口，管理 generation 切换、回滚窗口和 retire | `src/supervisor/`，关键文件 `main.js`、`supervisor.js` |
 | Node.js 客户端 | 读取主机配置，建立经证书校验的连接，编排直连、单跳 relay 和文件传输 | `src/client/`，关键文件 `host.js`、`transfer.js` |
 | TUI 适配层 | 为终端用户调用 Node.js 客户端能力 | `src/tui/`，关键文件 `app.js` |
+| 部署客户端 | 解析直连或网关目标，交互认证，验收并原子登记凭据与配置 | `src/cli/main.js`、`src/deploy/cli.js`、`bundle.js`、`config-store.js`、`prompts.js` |
 | Pi 适配层 | 注册远程工具，独立实现受协议回归测试约束的客户端 | `pi-extension/`，关键文件 `remote-exec.ts` |
 
 ## 一键安装能力
@@ -94,7 +101,7 @@ daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴
 
 
 
-RPC 服务器只暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。
+RPC 服务器暴露 `exec`、`exec.stream`、`file.read`、`file.write`、`relay` 和 `deploy.ssh` 六类方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。
 
 命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。
 
@@ -141,9 +148,21 @@ TLS 模式用于远程监听；`--insecure-http` 只允许回环地址。客户�
 
 候选版本启动失败、ready 失败或 TLS 验证失败时，系统保持当前 active 版本。
 
+### 部署并接入主机
+
+调用方指定 SSH 目标、daemon 端口及可选网关，系统通过已验证的 SSH 连接完成本地包安装，并在直连或 relay 验收通过后保存目标凭据和主机配置。
+
+直连或单跳网关部署成功时，系统交付可调用的目标配置，目标执行身份和指定 daemon 端口通过真实协议验证。
+
+SSH 指纹不符、认证失败或目标验收失败时，系统不登记该目标；单个目标失败时继续其余目标并交付逐台结果。
+
+客户端负责指纹记录、密码交互、发布包和配置登记。直连模式由客户端执行 SSH，网关模式通过认证 `deploy.ssh` 请求委托网关执行 SSH。两者复用 `src/deploy/ssh.js`，daemon 不依赖客户端配置和交互模块。网关 SSH 目标采用自身 relay 允许网段，部署接口不进入 relay 内层方法白名单。
+
+目标安装使用 SFTP 传入的本地包，目标无需公网出口。密码只在任务内存和加密连接中使用；网关与客户端对部署操作具有相同的 token 权限模型。TLS 私钥留在目标，客户端仅取得可信证书与 token。安装后的 daemon 访问仍需客户端或网关能连接目标内网监听端口。
+
 ### MVP
 
-调用方选择一个受信任的 daemon 主机，并经已验证的 TLS 连接提交命令、文件操作或 relay 请求，系统在该 daemon 用户权限范围内交付相应的执行结果、文件内容或目标结果。
+调用方可通过 SSH 部署并登记受信任的 daemon 主机，再经已验证的 TLS 连接提交命令、文件操作或 relay 请求，系统在该 daemon 用户权限范围内交付相应的执行结果、文件内容或目标结果。
 
 ### 执行远程命令
 
@@ -186,7 +205,8 @@ TLS 模式用于远程监听；`--insecure-http` 只允许回环地址。客户�
 | `/upload`、`/download` | 顶层能力“传输大文件” | 调用方可独立请求流式文件传输，并以 SHA-256 独立验收；它不经 relay，不能并入 RPC 文件操作。 |
 | `relay` | 顶层能力“经网关转发请求” | 调用方可独立请求网关访问目标 daemon，并以 relay 信封和目标结果验收。 |
 | Token 验证、TLS、白名单、超时和进程组清理 | 对应能力的下层行为 | 调用方不能把这些机制作为独立结果请求或验收；它们只限制或保证父能力在特定条件下的结果。 |
-| Node.js client、TUI、Pi extension | 支撑组件 | 三者只投影上述四类结果，不创建新的 daemon 交付结果。 |
+| `rex deploy`、`deploy.ssh` | 顶层能力“部署并接入主机” | 调用方可独立请求安装，并以真实 SSH、systemd、协议验收和客户端配置登记结果验收。指纹检查与暂存管理仅支持该部署结果。 |
+| Node.js client、TUI、Pi extension | 支撑组件 | 它们投影远程操作结果，部署客户端另外交付主机安装与接入结果。 |
 | `/healthz`、`/readyz` | 支撑组件 | 它们供部署探测服务可用性，不代表远程执行、文件或 relay 的调用方交付结果。 |
 
 ## 验证边界

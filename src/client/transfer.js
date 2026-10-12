@@ -5,7 +5,7 @@ const tls = require("tls");
 const crypto = require("crypto");
 const { loadConfig } = require("./config.js");
 
-function httpOp(hostName, op, localFile, remoteFile) {
+function httpOp(hostName, op, localFile, remoteFile, { signal } = {}) {
   return new Promise((resolve, reject) => {
     const config = loadConfig();
     const host = config.hosts[hostName];
@@ -21,36 +21,52 @@ function httpOp(hostName, op, localFile, remoteFile) {
       ca: host.ca ? fs.readFileSync(host.ca) : undefined,
       rejectUnauthorized: true,
     };
-    let req;
+    let request;
+    let source;
+    let settled = false;
+    const abort = () => finish(new Error("文件传输已取消"));
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      source?.destroy();
+      request?.destroy();
+      error ? reject(error instanceof Error ? error : new Error(String(error))) : resolve(result);
+    };
     if (op === "upload") {
       const stat = fs.statSync(localFile);
-      req = tls.connect(options, () => {
-        req.write(`POST /upload?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer ${token}\r\nContent-Length: ${stat.size}\r\nConnection: close\r\n\r\n`);
-        fs.createReadStream(localFile).pipe(req, { end: false });
+      request = tls.connect(options, () => {
+        request.write(`POST /upload?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer ${token}\r\nContent-Length: ${stat.size}\r\nConnection: close\r\n\r\n`);
+        source = fs.createReadStream(localFile);
+        source.once("error", finish);
+        source.pipe(request, { end: false });
       });
     } else {
-      req = tls.connect(options, () => {
-        req.write(`GET /download?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer ${token}\r\nConnection: close\r\n\r\n`);
+      request = tls.connect(options, () => {
+        request.write(`GET /download?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer ${token}\r\nConnection: close\r\n\r\n`);
       });
     }
-    const fail = (err) => reject(err instanceof Error ? err : new Error(String(err)));
+    request.setTimeout(30000, () => finish(new Error("文件传输连接停滞超时")));
     let raw = Buffer.alloc(0);
-    req.on("data", (chunk) => { raw = Buffer.concat([raw, chunk]); });
-    req.on("end", () => {
-      req.end();
+    request.on("data", (chunk) => { raw = Buffer.concat([raw, chunk]); });
+    request.on("end", () => {
       const i = raw.indexOf("\r\n\r\n");
-      if (i < 0) return fail("响应不完整");
+      if (i < 0) return finish(new Error("响应不完整"));
       const statusLine = raw.subarray(0, i).toString().split("\r\n")[0];
-      if (!/ 200 /.test(statusLine)) return fail(`HTTP 失败: ${statusLine}`);
+      if (!/ 200 /.test(statusLine)) return finish(new Error(`HTTP 失败: ${statusLine}`));
       const body = raw.subarray(i + 4);
-      if (op === "upload") {
-        try { resolve(JSON.parse(body.toString())); } catch (err) { fail(err); }
-      } else {
-        fs.writeFileSync(localFile, body);
-        resolve({ size: body.length, sha256: crypto.createHash("sha256").update(body).digest("hex") });
-      }
+      try {
+        if (op === "upload") finish(null, JSON.parse(body.toString()));
+        else {
+          fs.writeFileSync(localFile, body);
+          finish(null, { size: body.length, sha256: crypto.createHash("sha256").update(body).digest("hex") });
+        }
+      } catch (error) { finish(error); }
     });
-    req.on("error", fail);
+    request.on("error", finish);
+    request.once("close", () => { if (!settled) finish(new Error("文件传输连接提前关闭")); });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 

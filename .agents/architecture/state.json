@@ -40,7 +40,7 @@
     },
     {
       "id": "rpc-operation-boundary",
-      "conclusion": "RPC 服务器只暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。",
+      "conclusion": "RPC 服务器暴露 `exec`、`exec.stream`、`file.read`、`file.write`、`relay` 和 `deploy.ssh` 六类方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -54,6 +54,10 @@
         {
           "path": "src/daemon/transport/rpc-server.js",
           "locator": "[...inflight].forEach((cancel) => cancel());"
+        },
+        {
+          "path": "src/daemon/transport/rpc-server.js",
+          "locator": "\"deploy.ssh\": createSshDeployHandler(relayAllow),"
         }
       ]
     },
@@ -179,6 +183,25 @@
         {
           "path": "packaging/remote-exec.service",
           "locator": "ExecStart="
+        }
+      ]
+    },
+    {
+      "id": "ssh-deploy-boundary",
+      "conclusion": "调用方指定 SSH 目标、daemon 端口及可选网关，系统通过已验证的 SSH 连接完成本地包安装，并在直连或 relay 验收通过后保存目标凭据和主机配置。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "src/deploy/cli.js",
+          "locator": "async function deploy("
+        },
+        {
+          "path": "src/deploy/ssh.js",
+          "locator": "async function installTarget("
+        },
+        {
+          "path": "test/deploy/runner.js",
+          "locator": "root 密码回退、真实 SSH 安装、direct 配置与 WSS exec"
         }
       ]
     }

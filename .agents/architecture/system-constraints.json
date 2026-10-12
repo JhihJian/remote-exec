@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "mvp": {
-    "statement": "调用方选择一个受信任的 daemon 主机，并经已验证的 TLS 连接提交命令、文件操作或 relay 请求，系统在该 daemon 用户权限范围内交付相应的执行结果、文件内容或目标结果。",
+    "statement": "调用方可通过 SSH 部署并登记受信任的 daemon 主机，再经已验证的 TLS 连接提交命令、文件操作或 relay 请求，系统在该 daemon 用户权限范围内交付相应的执行结果、文件内容或目标结果。",
     "document": {
       "path": "docs/architecture/ARCHITECTURE.md",
       "anchor": "核心动作约束"
@@ -290,6 +290,59 @@
             "path": "test/install/runner.js",
             "locator": "同一命令重跑不重启进程，也不改变凭据。",
             "oracle": "PID 与 token 保持不变，错误 hash 不改变安装文件，启动失败后下一次安装恢复成功。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "SC-SSH-DEPLOY-001",
+      "status": "active",
+      "rule": "调用方指定 SSH 目标、daemon 端口及可选网关，系统通过已验证的 SSH 连接完成本地包安装，并在直连或 relay 验收通过后保存目标凭据和主机配置。",
+      "document": {
+        "path": "docs/architecture/ARCHITECTURE.md",
+        "anchor": "部署并接入主机"
+      },
+      "intentEvidence": [
+        {
+          "path": "docs/operations/SSH_DEPLOYMENT.md",
+          "locator": "省略 `--via` 时"
+        }
+      ],
+      "currentEvidence": [
+        {
+          "path": "src/deploy/cli.js",
+          "locator": "async function deploy("
+        },
+        {
+          "path": "src/deploy/ssh.js",
+          "locator": "async function installTarget("
+        },
+        {
+          "path": "src/daemon/operations/deploy.js",
+          "locator": "function createSshDeployHandler("
+        }
+      ],
+      "behaviors": [
+        {
+          "id": "BC-SSH-DEPLOY-001-NORMAL",
+          "kind": "normal",
+          "rule": "直连或单跳网关部署成功时，系统交付可调用的目标配置，目标执行身份和指定 daemon 端口通过真实协议验证。",
+          "outcome": "用户获得已安装并登记的直连或 relay 主机。",
+          "test": {
+            "path": "test/deploy/runner.js",
+            "locator": "网关 HTTPS 上传、ops SSH/sudo 密码回退、安装、relay exec 与 via 配置",
+            "oracle": "真实 SSH、sudo、systemd 安装成功，9000/9001端口正确，配置via关系正确，实际exec用户为remote-exec。"
+          }
+        },
+        {
+          "id": "BC-SSH-DEPLOY-001-VARIANT",
+          "kind": "variant",
+          "rule": "SSH 指纹不符、认证失败或目标验收失败时，系统不登记该目标；单个目标失败时继续其余目标并交付逐台结果。",
+          "outcome": "失败目标不登记，其他目标继续可用且凭据不泄漏。",
+          "test": {
+            "path": "test/deploy/runner.js",
+            "locator": "真实 SSH 主机指纹不匹配拒绝连接，未询问密码",
+            "oracle": "指纹和错误密码拒绝后配置不变，有限重试不泄漏密码，首个目标失败后后续目标实际安装并可调用。"
           }
         }
       ]

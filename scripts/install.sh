@@ -4,7 +4,7 @@
 fail() { printf '安装失败：%s\n' "$*" >&2; return 1; }
 
 usage() {
-  printf '%s\n' '用法：install.sh [--address DNS或IPv4] [--port 8791] [--run-user remote-exec|root] [--source HTTPS发布目录]'
+  printf '%s\n' '用法：install.sh [--address DNS或IPv4] [--port 8791] [--run-user remote-exec|root] [--source HTTPS发布目录] [--package 本地归档路径]'
 }
 
 cleanup() {
@@ -50,7 +50,7 @@ preflight() {
   [[ "$EUID" == 0 ]] || fail '请以 root 执行，或使用 sudo bash'
   [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || fail '当前仅支持 Linux x86_64'
   local tool
-  for tool in curl tar openssl sha256sum flock systemctl journalctl useradd getent install hostname awk sed chown chmod mktemp id cmp sort cp mv mkdir rm uname; do
+  for tool in curl tar openssl sha256sum flock systemctl journalctl useradd getent install hostname awk sed chown chmod mktemp id cmp sort cp mv mkdir rm uname realpath; do
     command -v "$tool" >/dev/null || fail "缺少基础工具：$tool"
   done
   [[ -f /etc/os-release ]] || fail '缺少 /etc/os-release'
@@ -62,7 +62,13 @@ preflight() {
   [[ "$run_user" == remote-exec || "$run_user" == root ]] || fail 'run-user 只能是 remote-exec 或 root'
   [[ "$port" =~ ^[0-9]{1,5}$ && "$port" != 0* ]] || fail 'port 必须是 1-65535 的整数'
   (( port >= 1 && port <= 65535 )) || fail 'port 必须是 1-65535 的整数'
-  [[ "$source_url" == https://* && "$source_url" != *[[:space:]]* && "$source_url" != *\?* && "$source_url" != *\#* ]] || fail 'source 必须是 HTTPS 发布目录'
+  if [[ -n "${package_path:-}" ]]; then
+    package_path="$(realpath -e -- "$package_path")" || fail 'package 文件不存在'
+    [[ -f "$package_path" ]] || fail 'package 必须是普通文件'
+    [[ -f "$package_path.sha256" ]] || fail 'package 缺少相邻的 SHA-256 校验文件'
+  else
+    [[ "$source_url" == https://* && "$source_url" != *[[:space:]]* && "$source_url" != *\?* && "$source_url" != *\#* ]] || fail 'source 必须是 HTTPS 发布目录'
+  fi
   if [[ -n "$address" ]]; then validate_address "$address"; fi
 }
 
@@ -155,24 +161,27 @@ NODE
 main() {
   set -Eeuo pipefail
   umask 077
-  local address='' port=8791 run_user=remote-exec source_url='https://github.com/JhihJian/remote-exec/releases/latest/download'
-  local address_set=0 port_set=0 user_set=0 source_set=0 work_dir='' app_stage='' credential_stage='' started_service=0 was_active=0
+  local address='' port=8791 run_user=remote-exec source_url='https://github.com/JhihJian/remote-exec/releases/latest/download' package_path=''
+  local address_set=0 port_set=0 user_set=0 source_set=0 package_set=0 work_dir='' app_stage='' credential_stage='' started_service=0 was_active=0
   local version run_group package_hash installed=0
   while (( $# )); do
     case "$1" in
       --help|-h) usage; return 0 ;;
-      --address|--port|--run-user|--source)
+      --address|--port|--run-user|--source|--package)
         (( $# >= 2 )) || fail "$1 缺少参数"
         case "$1" in
           --address) address="$2"; address_set=1 ;;
           --port) port="$2"; port_set=1 ;;
           --run-user) run_user="$2"; user_set=1 ;;
           --source) source_url="${2%/}"; source_set=1 ;;
+          --package) package_path="$2"; package_set=1 ;;
         esac
         shift 2 ;;
       *) fail "未知参数：$1" ;;
     esac
   done
+  (( source_set == 0 || package_set == 0 )) || fail '--package 与显式 --source 互斥'
+  if (( package_set )); then [[ -n "$package_path" ]] || fail '--package 路径不能为空'; fi
   preflight
   # 固定安装路径由 root 管理。锁在首次系统写入前取得。
   exec 9>/run/lock/remote-exec-install.lock
@@ -194,7 +203,7 @@ main() {
     [[ ! -e /opt/remote-exec && ! -e /etc/remote-exec && ! -e /root/remote-exec-access && ! -e /etc/systemd/system/remote-exec.service ]] || fail '发现既有部署，请使用对应升级或迁移流程'
     if systemctl cat remote-exec.service >/dev/null 2>&1; then fail '发现既有 remote-exec 服务，请使用对应升级或迁移流程'; fi
   fi
-  if (( source_set == 0 )); then
+  if (( package_set == 0 && source_set == 0 )); then
     local release_version release_url
     if (( installed )); then
       release_version="$(read_setting version)"
@@ -205,11 +214,17 @@ main() {
     [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail '无法解析稳定发布版本'
     source_url="https://github.com/JhihJian/remote-exec/releases/download/v$release_version"
   fi
-  printf '下载并校验运行包……\n'
-  fetch "$source_url/remote-exec-linux-x64.tar.gz.sha256" "$work_dir/checksum"
-  read -r package_hash _ < "$work_dir/checksum"
+  if (( package_set )); then printf '复制并校验本地运行包……\n'; else printf '下载并校验运行包……\n'; fi
+  if (( package_set )); then
+    cp -- "$package_path" "$work_dir/package.tar.gz"
+    read -r package_hash _ < "$package_path.sha256" || fail 'package SHA-256 校验文件为空'
+  else
+    fetch "$source_url/remote-exec-linux-x64.tar.gz.sha256" "$work_dir/checksum"
+    read -r package_hash _ < "$work_dir/checksum"
+    [[ "$package_hash" =~ ^[0-9a-f]{64}$ ]] || fail '发布包校验文件无效'
+    fetch "$source_url/remote-exec-linux-x64.tar.gz" "$work_dir/package.tar.gz"
+  fi
   [[ "$package_hash" =~ ^[0-9a-f]{64}$ ]] || fail '发布包校验文件无效'
-  fetch "$source_url/remote-exec-linux-x64.tar.gz" "$work_dir/package.tar.gz"
   [[ "$(sha256sum "$work_dir/package.tar.gz" | awk '{print $1}')" == "$package_hash" ]] || fail '发布包 SHA-256 不匹配'
   tar -tzf "$work_dir/package.tar.gz" > "$work_dir/entries"
   awk 'BEGIN { ok=1 } /^\// || /(^|\/)\.\.($|\/)/ { ok=0 } END { exit !ok }' "$work_dir/entries" || fail '发布包包含非法路径'

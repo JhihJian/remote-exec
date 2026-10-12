@@ -305,7 +305,7 @@ ssh user@host 'mkdir -p ~/remote-exec && tar -xzf ~/remote-exec-1.0.0.tgz -C ~/r
 ssh user@host 'cd ~/remote-exec && npm install --omit=dev'
 ```
 
-生产环境建议使用 systemd 或其他进程管理器运行，并为 daemon 配置专用用户、工作目录、证书权限、日志轮转和防火墙规则。具体主机的部署自动化应由使用方根据自身网络、用户和凭证管理方式维护。
+生产环境建议使用 systemd 或其他进程管理器运行，并为 daemon 配置专用用户、工作目录、证书权限、日志轮转和防火墙规则。具体主机的部署自动化应由使用方根据自身网络、用户和凭证管理方式维护。目标一键部署流程见[一键部署设计方案](docs/operations/ONE_COMMAND_DEPLOYMENT_DESIGN.md)，该方案尚未实现。
 
 ## 单一外部端口无中断升级
 

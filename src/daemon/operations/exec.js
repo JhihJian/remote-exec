@@ -8,8 +8,8 @@ const {
   EXEC_TIMEOUT_EXIT_CODE,
   STREAM_CHUNK_BYTES,
   STREAM_SEND_STALL_MS,
-} = require("./constants.js");
-const { rpcError } = require("./security.js");
+} = require("../shared/constants.js");
+const { rpcError } = require("../shared/rpc-error.js");
 
 const b64 = (buf) => buf.toString("base64");
 

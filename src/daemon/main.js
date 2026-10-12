@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 "use strict";
 
-const { DEFAULT_RELAY_ALLOW } = require("./constants.js");
-const { createServer } = require("./http-server.js");
+const { DEFAULT_RELAY_ALLOW } = require("./shared/constants.js");
+const { createServer } = require("./transport/http-server.js");
 const { createLifecycle } = require("./lifecycle.js");
-const { loadTokenSha256, log } = require("./security.js");
+const { loadTokenSha256 } = require("./shared/auth.js");
+const { log } = require("./shared/log.js");
 
 function parseArgs(argv) {
   const opts = { host: "127.0.0.1", port: 8791 };

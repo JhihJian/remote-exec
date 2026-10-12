@@ -11,8 +11,9 @@ const {
   RELAY_MAX_TOTAL_TIMEOUT_MS,
   RELAY_SLACK_MS,
   STREAM_SEND_STALL_MS,
-} = require("./constants.js");
-const { log, rpcError } = require("./security.js");
+} = require("../shared/constants.js");
+const { log } = require("../shared/log.js");
+const { rpcError } = require("../shared/rpc-error.js");
 
 function ipv4ToInt(ip) {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);

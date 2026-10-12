@@ -3,10 +3,11 @@
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
-const { HTTP_IDLE_TIMEOUT_MS } = require("./constants.js");
-const { handleDownload, handleUpload } = require("./files.js");
-const { checkToken, log } = require("./security.js");
-const { createRpcServer } = require("./rpc.js");
+const { HTTP_IDLE_TIMEOUT_MS } = require("../shared/constants.js");
+const { handleDownload, handleUpload } = require("./file-transfer.js");
+const { checkToken } = require("../shared/auth.js");
+const { log } = require("../shared/log.js");
+const { createRpcServer } = require("./rpc-server.js");
 
 function createServer(opts, tokenSha256) {
   const lifecycle = opts.lifecycle;

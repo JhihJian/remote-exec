@@ -24,7 +24,7 @@
       ],
       "currentEvidence": [
         {
-          "path": "src/daemon/exec.js",
+          "path": "src/daemon/operations/exec.js",
           "locator": "function spawnShell(command, cwd)"
         }
       ],
@@ -69,11 +69,11 @@
       ],
       "currentEvidence": [
         {
-          "path": "src/daemon/files.js",
+          "path": "src/daemon/operations/files.js",
           "locator": "async function fileRead(params)"
         },
         {
-          "path": "src/daemon/files.js",
+          "path": "src/daemon/operations/files.js",
           "locator": "async function fileWrite(params)"
         }
       ],
@@ -118,11 +118,11 @@
       ],
       "currentEvidence": [
         {
-          "path": "src/daemon/files.js",
+          "path": "src/daemon/transport/file-transfer.js",
           "locator": "function handleUpload(req, res)"
         },
         {
-          "path": "src/daemon/files.js",
+          "path": "src/daemon/transport/file-transfer.js",
           "locator": "function handleDownload(req, res)"
         }
       ],
@@ -167,7 +167,7 @@
       ],
       "currentEvidence": [
         {
-          "path": "src/daemon/relay.js",
+          "path": "src/daemon/operations/relay.js",
           "locator": "function createRelayHandler(relayAllow = DEFAULT_RELAY_ALLOW)"
         }
       ],

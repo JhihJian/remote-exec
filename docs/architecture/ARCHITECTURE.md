@@ -32,10 +32,10 @@ Rel(fileTransfer, hostRuntime, "流式读写", "文件系统")
 
 | 组件 | 职责 | 代码映射 |
 | --- | --- | --- |
-| Daemon 边界 | 解析启动参数，创建 HTTP(S) 服务，健康检查、认证和 WebSocket 升级 | `src/daemon/main.js`、`src/daemon/http-server.js`、`src/daemon/security.js` |
+| Daemon 边界 | 解析启动参数，创建 HTTP(S) 服务，健康检查、认证和 WebSocket 升级 | `src/daemon/main.js`、`src/daemon/lifecycle.js`、`src/daemon/transport/http-server.js`、`src/daemon/shared/auth.js` |
 | 稳定入口 supervisor | 持有固定 TCP 入口，管理 old/new generation，支持新连接切换、drain 和 rollback | `src/supervisor/main.js`、`src/supervisor/supervisor.js` |
-| 远程操作服务 | 分发 JSON-RPC，执行命令，读写文件，控制 relay 目标和流式背压 | `src/daemon/rpc.js`、`src/daemon/exec.js`、`src/daemon/files.js`、`src/daemon/relay.js` |
-| 大文件传输 | 处理直连 HTTPS 上传下载，不经 relay | `src/daemon/http-server.js`、`src/daemon/files.js` |
+| 远程操作服务 | 分发 JSON-RPC，执行命令，读写文件，控制 relay 目标和流式背压 | `src/daemon/transport/rpc-server.js`、`src/daemon/operations/exec.js`、`src/daemon/operations/files.js`、`src/daemon/operations/relay.js` |
+| 大文件传输 | 处理直连 HTTPS 上传下载，不经 relay | `src/daemon/transport/http-server.js`、`src/daemon/transport/file-transfer.js` |
 | Node.js 客户端适配层 | 读取主机配置，建立 WSS 连接，编排直连或单跳 relay | `src/client/`，关键文件 `src/client/host.js` |
 | TUI 适配层 | 为终端用户调用 Node.js 客户端能力 | `src/tui/app.js` |
 | Pi 适配层 | 为 Pi 注册远程工具，并独立实现受协议回归测试约束的 WSS 客户端 | `pi-extension/remote-exec.ts` |
@@ -56,6 +56,19 @@ RPC 服务器只暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `
 Node.js 客户端负责直连和深度为一的 relay 编排。TUI 依赖 Node.js 客户端；Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。
 
 relay 只接受 IPv4 字面量和白名单内目标，只转发 `exec`、`exec.stream`、`file.read` 和 `file.write`，禁止嵌套 relay。网关在连接目标时校验证书，并将目标认证失败、证书失败和不可达状态区分为不同 RPC 错误。
+
+## Daemon 子模块
+
+Daemon 按协议适配、远程操作和共享基础功能组织，启动入口与生命周期协调保留在根目录。文件 RPC 和 HTTP 流式传输分别归属操作层与传输层，Token 认证只处理凭证，日志和 RPC 错误独立供各层使用。
+
+| 模块 | 职责与协作 |
+| --- | --- |
+| `main.js`、`lifecycle.js` | 入口组装服务并处理进程信号；生命周期管理就绪状态、资源计数和排空，资源所有者注册具体清理回调。 |
+| `transport/` | `http-server.js` 管理 HTTP(S) 路由、鉴权和 WebSocket 升级；`rpc-server.js` 管理会话、请求顺序、方法分发和断连取消；`file-transfer.js` 管理 HTTP 文件流、临时文件及响应。 |
+| `operations/` | `exec.js` 管理命令进程与输出；`files.js` 处理文件 RPC；`relay.js` 管理目标限制、TLS/WSS 连接和转发。操作通过事件发送及取消注册回调与 RPC 层协作。 |
+| `shared/` | `auth.js` 验证 Token；`log.js` 输出日志；`rpc-error.js` 创建 RPC 错误；`constants.js` 定义各层使用的限额和默认值。 |
+
+启动入口组装传输层，传输层调用操作层，各层可使用共享基础功能。共享模块与生命周期协调不依赖传输层或操作层。RPC 会话仍顺序执行请求，HTTP 文件传输仍只支持直连，命令取消与 relay 白名单规则保持原有语义。
 
 ## 安全规则
 

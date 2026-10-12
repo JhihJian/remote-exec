@@ -363,13 +363,11 @@ node .agents/architecture-governance/check-state.mjs check --require-active
 
 | 路径 | 说明 |
 | --- | --- |
-| `src/daemon/main.js` | daemon 启动入口 |
-| `src/daemon/main.js` | daemon 参数解析、启动和生命周期 |
-| `src/daemon/http-server.js` | HTTP、HTTPS 和 WebSocket upgrade 入口 |
-| `src/daemon/rpc.js` | WebSocket 会话、RPC 分发和断连取消 |
-| `src/daemon/exec.js` | 命令执行、流式输出、超时和进程组清理 |
-| `src/daemon/files.js` | 文件 RPC 及 HTTP 上传下载 |
-| `src/daemon/relay.js` | relay 白名单、连接和流式转发 |
+| `src/daemon/main.js` | daemon 参数解析、服务组装和进程信号处理 |
+| `src/daemon/lifecycle.js` | 就绪状态、资源计数和排空协调 |
+| `src/daemon/transport/` | HTTP(S) 入口、WebSocket RPC 会话及 HTTP 流式文件传输 |
+| `src/daemon/operations/` | 命令执行、文件 RPC 和单跳 relay |
+| `src/daemon/shared/` | Token 认证、日志、RPC 错误和常量 |
 | `src/client/index.js` | Node.js 公共客户端统一导出 |
 | `src/client/config.js` | `hosts.json` 配置加载 |
 | `src/client/websocket.js` | Node.js WSS 传输 |

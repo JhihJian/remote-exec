@@ -3,16 +3,6 @@
 const crypto = require("crypto");
 const fs = require("fs");
 
-function log(event, extra = "") {
-  process.stderr.write(`[${new Date().toISOString()}] ${event}${extra ? " " + extra : ""}\n`);
-}
-
-function rpcError(code, message) {
-  const err = new Error(message);
-  err.rpcCode = code;
-  return err;
-}
-
 function loadTokenSha256(file) {
   const hex = fs.readFileSync(file, "utf8").trim();
   if (!/^[0-9a-f]{64}$/i.test(hex)) {
@@ -34,4 +24,4 @@ function checkToken(tokenSha256, headers) {
   return crypto.timingSafeEqual(tokenSha256, actual);
 }
 
-module.exports = { checkToken, loadTokenSha256, log, rpcError };
+module.exports = { checkToken, loadTokenSha256 };

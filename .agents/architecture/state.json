@@ -25,11 +25,11 @@
       "documentRole": "overview",
       "evidence": [
         {
-          "path": "src/daemon/http-server.js",
+          "path": "src/daemon/transport/http-server.js",
           "locator": "if (req.url === \"/healthz\")"
         },
         {
-          "path": "src/daemon/http-server.js",
+          "path": "src/daemon/transport/http-server.js",
           "locator": "wss.handleUpgrade(req, socket, head, (ws) => wss.emit(\"connection\", ws, req));"
         },
         {
@@ -44,15 +44,15 @@
       "documentRole": "overview",
       "evidence": [
         {
-          "path": "src/daemon/rpc.js",
+          "path": "src/daemon/transport/rpc-server.js",
           "locator": "\"exec.stream\": execStreamCommand,"
         },
         {
-          "path": "src/daemon/rpc.js",
+          "path": "src/daemon/transport/rpc-server.js",
           "locator": "queue = queue"
         },
         {
-          "path": "src/daemon/rpc.js",
+          "path": "src/daemon/transport/rpc-server.js",
           "locator": "[...inflight].forEach((cancel) => cancel());"
         }
       ]
@@ -63,15 +63,15 @@
       "documentRole": "overview",
       "evidence": [
         {
-          "path": "src/daemon/exec.js",
+          "path": "src/daemon/operations/exec.js",
           "locator": "return spawn(\"bash\", [\"-lc\", command], {"
         },
         {
-          "path": "src/daemon/exec.js",
+          "path": "src/daemon/operations/exec.js",
           "locator": "process.kill(-child.pid, name)"
         },
         {
-          "path": "src/daemon/exec.js",
+          "path": "src/daemon/operations/exec.js",
           "locator": "for (let offset = 0; offset < data.length; offset += STREAM_CHUNK_BYTES)"
         }
       ]
@@ -82,7 +82,7 @@
       "documentRole": "overview",
       "evidence": [
         {
-          "path": "src/daemon/files.js",
+          "path": "src/daemon/operations/files.js",
           "locator": "if (typeof file !== \"string\" || !path.isAbsolute(file))"
         },
         {
@@ -116,15 +116,15 @@
       "documentRole": "overview",
       "evidence": [
         {
-          "path": "src/daemon/relay.js",
+          "path": "src/daemon/operations/relay.js",
           "locator": "target.host 必须是 IPv4 字面量（拒绝 DNS 名，防解析绕过白名单）"
         },
         {
-          "path": "src/daemon/relay.js",
+          "path": "src/daemon/operations/relay.js",
           "locator": "relay 仅支持转发 ${[...RELAY_INNER_METHODS].join(\"/\")}，禁止嵌套 relay"
         },
         {
-          "path": "src/daemon/relay.js",
+          "path": "src/daemon/operations/relay.js",
           "locator": "rejectUnauthorized: true,"
         }
       ]
@@ -139,7 +139,7 @@
           "locator": "持有有效 token 的调用方可以在 daemon 运行用户的权限范围内执行 `bash -lc` 命令，并读写该用户有权限访问的绝对路径文件。"
         },
         {
-          "path": "src/daemon/security.js",
+          "path": "src/daemon/shared/auth.js",
           "locator": "return Buffer.from(hex, \"hex\");"
         }
       ]

@@ -1,6 +1,6 @@
 "use strict";
 
-const { DRAIN_TIMEOUT_MS } = require("./constants.js");
+const { DRAIN_TIMEOUT_MS } = require("./shared/constants.js");
 
 function createLifecycle(options = {}) {
   const drainTimeoutMs = Math.max(1, Number(options.drainTimeoutMs) || DRAIN_TIMEOUT_MS);

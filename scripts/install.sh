@@ -67,8 +67,19 @@ preflight() {
 }
 
 fetch() {
-  curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
-    --connect-timeout 10 --max-time 180 --retry 2 --output "$2" "$1"
+  local attempt code
+  for attempt in 1 2 3; do
+    if curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+      --connect-timeout 10 --max-time 900 --speed-limit 1024 --speed-time 60 --continue-at - --output "$2" "$1"; then
+      return 0
+    else
+      code=$?
+    fi
+    # HTTP 错误与不支持续传应直接报告，网络中断则保留已下载内容。
+    if [[ "$code" == 22 || "$code" == 33 ]]; then return "$code"; fi
+    printf '下载中断，保留进度后重试（%s/3）……\n' "$attempt" >&2
+  done
+  return "$code"
 }
 
 read_setting() {

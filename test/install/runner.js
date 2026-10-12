@@ -274,6 +274,8 @@ async function main() {
     const source = makePackage(root);
     const certificate = makeCertificate(root);
     const badBytes = Buffer.concat([source.bytes, Buffer.from("corrupt")]);
+    let interruptedDownload = false;
+    let resumedDownload = false;
     const sourcePort = await new Promise((resolve, reject) => {
       server = https.createServer({ key: fs.readFileSync(certificate.key), cert: fs.readFileSync(certificate.cert) }, (request, response) => {
         if (request.url.endsWith("/github/latest")) {
@@ -287,8 +289,22 @@ async function main() {
         }
         const bad = request.url.startsWith("/bad");
         if (!request.url.endsWith(".sha256")) {
-          response.writeHead(200, { "content-type": "application/gzip" });
-          response.end(bad ? badBytes : source.bytes);
+          if (!bad && request.headers.range) {
+            const offset = Number(request.headers.range.match(/^bytes=(\d+)-$/)?.[1]);
+            if (!Number.isInteger(offset) || offset <= 0 || offset >= source.bytes.length) {
+              response.writeHead(416); response.end(); return;
+            }
+            resumedDownload = true;
+            response.writeHead(206, { "content-range": `bytes ${offset}-${source.bytes.length - 1}/${source.bytes.length}`, "content-length": source.bytes.length - offset });
+            response.end(source.bytes.subarray(offset));
+          } else if (!bad && !interruptedDownload) {
+            interruptedDownload = true;
+            response.writeHead(200, { "content-length": source.bytes.length, connection: "close" });
+            response.end(source.bytes.subarray(0, Math.floor(source.bytes.length / 2)));
+          } else {
+            response.writeHead(200, { "content-type": "application/gzip" });
+            response.end(bad ? badBytes : source.bytes);
+          }
           return;
         }
         response.writeHead(200, { "content-type": "text/plain" });
@@ -301,6 +317,7 @@ async function main() {
     if (process.env.INSTALL_SYSTEMD) {
       if (!process.env.INSTALL_PACKAGE) throw new Error("真实 systemd 验收需通过 INSTALL_PACKAGE 指定正式构建包");
       await systemdTest(certificate, sourcePort);
+      if (!resumedDownload) throw new Error("未验证网络中断续传");
       return;
     }
     fs.copyFileSync(installScript, path.join(root, "tmp/install.sh"));
@@ -326,6 +343,7 @@ async function main() {
       process.once("exit", (code, signal) => resolve({ status: code === null ? 1 : code, signal }));
     });
     if (result.status !== 0) throw new Error(`安装 runner 验收失败，退出码 ${result.status}`);
+    if (!resumedDownload) throw new Error("未验证网络中断续传");
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });

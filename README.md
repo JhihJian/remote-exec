@@ -12,7 +12,7 @@ remote-exec 的主要能力之一，是在**单一外部端口**的设备上进�
 
 ## 项目状态
 
-当前版本为 `1.0.0`，运行时依赖 Node.js 18 或更高版本，以及 `ws` 库。目标运行环境为 Linux，命令执行依赖 `bash`、`setsid` 等常见系统工具。
+当前版本为 `1.0.1`，运行时依赖 Node.js 18 或更高版本，以及 `ws` 库。目标运行环境为 Linux，命令执行依赖 `bash`、`setsid` 等常见系统工具。
 
 已验证的能力包括：
 
@@ -300,8 +300,8 @@ daemon 可以部署为目标主机上的普通 Node.js 进程。最小文件集�
 
 ```bash
 npm pack
-scp remote-exec-1.0.0.tgz user@host:~/
-ssh user@host 'mkdir -p ~/remote-exec && tar -xzf ~/remote-exec-1.0.0.tgz -C ~/remote-exec --strip-components=1'
+scp remote-exec-1.0.1.tgz user@host:~/
+ssh user@host 'mkdir -p ~/remote-exec && tar -xzf ~/remote-exec-1.0.1.tgz -C ~/remote-exec --strip-components=1'
 ssh user@host 'cd ~/remote-exec && npm install --omit=dev'
 ```
 

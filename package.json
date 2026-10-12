@@ -1,6 +1,6 @@
 {
   "name": "remote-exec",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "面向受信任 Linux 主机的轻量 WSS 远程执行 daemon，支持 Pi agent 接入和单跳 relay。",
   "main": "src/client/index.js",
   "bin": {

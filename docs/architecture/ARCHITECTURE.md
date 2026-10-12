@@ -8,37 +8,63 @@ remote-exec 在受信任的 Linux 主机上通过 TLS、Bearer token 和 JSON-RP
 
 客户端运行在 daemon 进程之外：TUI 调用 Node.js 客户端库，Pi extension 在 Pi 中提供远程工具。它们通过 HTTPS 或 WSS 连接 daemon。部署启用 supervisor 时，supervisor 作为独立进程持有固定入口，把连接转发给当前 daemon 版本；TLS 和 Token 验证仍在 daemon 内完成。
 
-### Daemon 进程内分层
+### Daemon 代码结构与模块协作
 
-从上到下阅读下图。上层可使用下层，允许跨层使用；相邻层之间的箭头表示依赖方向。通用的跨层依赖省略，请求按各自功能访问需要的层。
+图中的分组表达职责层次和代码目录，组内方框表达模块，箭头表达关键模块协作。上层可以使用下层，同层模块可以协作；各上层对 `shared/` 的通用依赖由这一约定表达，省略重复连线。箭头说明调用方与职责接收方，请求返回、流式事件和取消回调在下文说明。
 
 ```mermaid
 flowchart TB
-    subgraph daemon["Daemon 进程"]
-        startup["启动组装层<br/>解析参数 · 创建服务 · 处理进程信号"]
-        transport["协议适配层<br/>HTTP 路由与认证 · RPC 会话与分发 · HTTP 文件流"]
-        operations["远程操作层<br/>命令执行 · 文件 RPC · 单跳 relay"]
-        support["基础支持层<br/>生命周期协调 ｜ Token 验证 · 日志 · RPC 错误 · 配置"]
-        startup --> transport --> operations --> support
+    subgraph daemon["Daemon 进程 · src/daemon/"]
+        direction TB
+        subgraph assembly["启动组装"]
+            main["main.js<br/>参数解析 · 服务组装 · 进程信号"]
+        end
+        subgraph transport["协议适配 · transport/"]
+            http["http-server.js<br/>HTTP 路由 · 入口认证 · WebSocket 升级"]
+            rpc["rpc-server.js<br/>会话 · RPC 分发 · 输出与取消"]
+            transfer["file-transfer.js<br/>HTTP 上传下载 · 文件流与临时文件"]
+        end
+        subgraph operations["远程操作 · operations/"]
+            exec["exec.js<br/>命令进程与输出"]
+            files["files.js<br/>文件 RPC 读写"]
+            relay["relay.js<br/>目标限制与单跳转发"]
+        end
+        subgraph foundation["基础支持"]
+            lifecycle["lifecycle.js · 根目录<br/>就绪 · 资源计数 · 排空"]
+            shared["shared/<br/>auth.js · log.js<br/>rpc-error.js · constants.js"]
+        end
+        main -->|创建并监听服务| http
+        main -->|创建协调器、发起排空| lifecycle
+        http -->|创建 RPC 服务、移交已认证会话| rpc
+        http -->|委托上传下载| transfer
+        rpc -->|exec / exec.stream| exec
+        rpc -->|file.read / file.write| files
+        rpc -->|relay| relay
+        http -->|HTTP 接纳检查与计数| lifecycle
+        rpc -->|连接与请求计数、注册强制关闭| lifecycle
+        operations ~~~ foundation
     end
-    environment["本机运行环境<br/>Node.js · bash · 文件系统 · 进程 · 网络"]
-    support --> environment
 ```
 
-命令和文件 RPC 由协议适配层分发到远程操作层。HTTP 上传下载由协议适配层直接处理文件流、访问本机文件系统。各上层按需使用基础支持层的认证、日志、错误和配置。生命周期协调负责就绪状态、资源计数和排空，资源所有者注册具体清理回调，由协调器在排空期限到达时调用。
+`main.js` 创建生命周期协调器和 HTTP(S) 服务。`http-server.js` 把已认证的 WebSocket 会话交给 `rpc-server.js`，把 HTTP 文件请求交给 `file-transfer.js`。RPC 服务器按方法调用命令、文件或 relay 模块，负责响应封装、流式事件发送和断连取消；操作模块通过传入的回调发送事件、注册取消操作。
+
+HTTP 文件传输直接访问本机文件系统，与文件 RPC 分别实现。`lifecycle.js` 管理就绪状态、HTTP 传输、WebSocket 连接和 RPC 请求的资源计数，各资源所有者负责具体清理并按需注册强制关闭回调。`shared/` 提供各上层需要的认证、日志、RPC 错误和配置。`lifecycle.js` 属于基础支持职责，源码仍位于 daemon 根目录；图中的职责层次与实际目录位置分别标注。
 
 “本机运行环境”就是运行 daemon 的那台机器提供的程序与资源：执行命令使用 bash 和进程，读写文件使用文件系统，建立连接使用网络。
 
 relay 请求会让远程操作层连接另一台机器上的 daemon，再把命令或文件 RPC 转发过去。relay 的目标 daemon 就是这台远端服务，它运行同样的协议，属于跨机器的部署关系。
 
-| 层次 | 职责 | 代码映射 |
+| 图中模块 | 职责 | 代码映射 |
 | --- | --- | --- |
-| 启动组装层 | 解析参数、组装服务、监听端口和处理进程信号 | `src/daemon/main.js` |
-| 协议适配层 | HTTP(S) 路由与鉴权、WebSocket 会话与 RPC 分发、HTTP 流式上传下载 | `src/daemon/transport/`，关键文件 `http-server.js`、`rpc-server.js`、`file-transfer.js` |
-| 远程操作层 | 命令执行、文件 RPC、relay 目标限制和流式转发 | `src/daemon/operations/`，关键文件 `exec.js`、`files.js`、`relay.js` |
-| 基础支持层：生命周期协调 | 就绪状态、资源计数、排空和清理回调协调 | `src/daemon/lifecycle.js` |
-| 基础支持层：共享功能 | Token 摘要加载和验证、日志、RPC 错误、限额与默认配置 | `src/daemon/shared/`，关键文件 `auth.js`、`log.js`、`rpc-error.js`、`constants.js` |
-| 本机运行环境 | 为各上层提供程序、文件系统、进程和网络 | Node.js 与操作系统提供，位于项目源码之外 |
+| 启动组装：`main.js` | 参数解析、服务组装、监听和进程信号 | `src/daemon/main.js` |
+| 协议适配：`http-server.js` | HTTP 路由、入口认证和 WebSocket 升级 | `src/daemon/transport/http-server.js` |
+| 协议适配：`rpc-server.js` | WebSocket 会话、RPC 分发、响应与事件发送、断连取消 | `src/daemon/transport/rpc-server.js` |
+| 协议适配：`file-transfer.js` | HTTP 文件流、临时文件和传输结果 | `src/daemon/transport/file-transfer.js` |
+| 远程操作：`exec.js` | 命令执行、输出、超时和进程组清理 | `src/daemon/operations/exec.js` |
+| 远程操作：`files.js` | 文件 RPC 读写 | `src/daemon/operations/files.js` |
+| 远程操作：`relay.js` | 目标限制、目标连接和单跳转发 | `src/daemon/operations/relay.js` |
+| 基础支持：`lifecycle.js` | 就绪状态、资源计数、排空和清理回调协调 | `src/daemon/lifecycle.js` |
+| 基础支持：`shared/` | Token 验证、日志、RPC 错误、限额与默认配置 | `src/daemon/shared/`，关键文件 `auth.js`、`log.js`、`rpc-error.js`、`constants.js` |
 
 进程外的入口与调用方映射如下：
 

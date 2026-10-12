@@ -88,6 +88,8 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 安装代码位于 `scripts/install.sh`、`scripts/build-release.sh`、`packaging/remote-exec.service` 和 `test/install/runner.js`。安装器直接启动单一 daemon，supervisor 与无中断升级属于独立部署路径。发布工作流位于 `.github/workflows/release.yml`，为 Linux x86_64 生成自包含包并发布安装入口。
 
 
+## 稳定边界
+
 daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器；固定入口 supervisor 通过原始 TCP 将新连接分配到 active generation。
 
 

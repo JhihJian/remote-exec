@@ -131,9 +131,9 @@ write_access() {
   install -m 0600 /etc/remote-exec/credentials/server.crt /root/remote-exec-access/server.crt
   /opt/remote-exec/runtime/bin/node - "$address" "$port" <<'NODE'
 const fs = require("node:fs");
-const host = process.argv[1];
+const [host, port] = process.argv.slice(2);
 const name = require("node:os").hostname();
-const config = { hosts: { [name]: { host, port: Number(process.argv[2]), ca: "/ABSOLUTE/PATH/remote-exec-access/server.crt", tokenFile: "/ABSOLUTE/PATH/remote-exec-access/token.txt" } } };
+const config = { hosts: { [name]: { host, port: Number(port), ca: "/ABSOLUTE/PATH/remote-exec-access/server.crt", tokenFile: "/ABSOLUTE/PATH/remote-exec-access/token.txt" } } };
 fs.writeFileSync("/root/remote-exec-access/hosts.json", JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
 NODE
   printf '%s\n' '客户端接入：' '1. 解包到自己的凭据目录，并将目录权限设为 700、文件权限设为 600。' '2. 将 hosts.json 中 ca 和 tokenFile 改为解包文件的绝对路径。' '3. 将该 hosts 条目合并到 ~/.config/remote-exec/hosts.json，保留其他主机。' '4. 多个地址并存时，可从证书 SAN 中选择实际可达地址填写 host。' '5. 使用正常 TLS 验证连接，请勿关闭证书校验。' > /root/remote-exec-access/README.txt
@@ -145,7 +145,7 @@ main() {
   set -Eeuo pipefail
   umask 077
   local address='' port=8791 run_user=remote-exec source_url='https://github.com/JhihJian/remote-exec/releases/latest/download'
-  local address_set=0 port_set=0 user_set=0 work_dir='' app_stage='' credential_stage='' started_service=0 was_active=0
+  local address_set=0 port_set=0 user_set=0 source_set=0 work_dir='' app_stage='' credential_stage='' started_service=0 was_active=0
   local version run_group package_hash installed=0
   while (( $# )); do
     case "$1" in
@@ -156,7 +156,7 @@ main() {
           --address) address="$2"; address_set=1 ;;
           --port) port="$2"; port_set=1 ;;
           --run-user) run_user="$2"; user_set=1 ;;
-          --source) source_url="${2%/}" ;;
+          --source) source_url="${2%/}"; source_set=1 ;;
         esac
         shift 2 ;;
       *) fail "未知参数：$1" ;;
@@ -182,6 +182,17 @@ main() {
   else
     [[ ! -e /opt/remote-exec && ! -e /etc/remote-exec && ! -e /root/remote-exec-access && ! -e /etc/systemd/system/remote-exec.service ]] || fail '发现既有部署，请使用对应升级或迁移流程'
     if systemctl cat remote-exec.service >/dev/null 2>&1; then fail '发现既有 remote-exec 服务，请使用对应升级或迁移流程'; fi
+  fi
+  if (( source_set == 0 )); then
+    local release_version release_url
+    if (( installed )); then
+      release_version="$(read_setting version)"
+    else
+      release_url="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 --output /dev/null --write-out '%{url_effective}' https://github.com/JhihJian/remote-exec/releases/latest)"
+      release_version="${release_url##*/v}"
+    fi
+    [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail '无法解析稳定发布版本'
+    source_url="https://github.com/JhihJian/remote-exec/releases/download/v$release_version"
   fi
   printf '下载并校验运行包……\n'
   fetch "$source_url/remote-exec-linux-x64.tar.gz.sha256" "$work_dir/checksum"

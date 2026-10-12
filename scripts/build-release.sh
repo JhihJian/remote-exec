@@ -100,7 +100,7 @@ cp --no-preserve=mode,ownership,links "$PROJECT_ROOT/scripts/smoke.js" "$PACKAGE
 )
 
 tar -xJf "$NODE_ARCHIVE_PATH" --strip-components=1 -C "$NODE_DIR"
-cp --no-preserve=mode,ownership,links "$NODE_DIR/bin/node" "$PACKAGE_DIR/runtime/bin/node"
+install -m 0755 "$NODE_DIR/bin/node" "$PACKAGE_DIR/runtime/bin/node"
 cp --no-preserve=mode,ownership,links "$NODE_DIR/LICENSE" "$PACKAGE_DIR/runtime/LICENSE"
 rm -rf "$NODE_DIR"
 

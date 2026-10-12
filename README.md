@@ -324,6 +324,8 @@ curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/inst
 安装成功后，客户端接入资料保存在 `/root/remote-exec-access.tar.gz`。服务只负责目标机上的安装和验收，防火墙、云安全组和客户端配置仍按网络环境配置。完整参数和失败处理见[一键安装方案](docs/operations/ONE_COMMAND_DEPLOYMENT_DESIGN.md)。
 
 
+## 单一外部端口无中断升级
+
 稳定入口由 `src/supervisor/` 提供，daemon generation 使用不同的回环端口。升级流程只有三个动作：先启动并验证候选版本，再切换新连接，最后在回滚窗口关闭且旧连接归零后 retire 旧版本。
 
 发布门禁使用真实 TLS daemon 和真实客户端执行连续两轮升级，覆盖在途 `exec`、`exec.stream`、relay 流、上传下载、持续新连接、候选失败、回滚和旧进程清理：

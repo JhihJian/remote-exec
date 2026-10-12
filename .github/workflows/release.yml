@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,8 +25,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install install-test prerequisites
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Build Linux x64 package
+        run: bash scripts/build-release.sh --output-dir dist
+
       - name: Run tests
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/remote-exec-linux-x64.tar.gz
         run: npm test
+
+      - name: Verify real systemd install and reboot
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/remote-exec-linux-x64.tar.gz
+          INSTALL_SYSTEMD: '1'
+        run: |
+          docker build -t remote-exec-install-systemd:test test/install
+          npm run test:install
 
       - name: Check tag version
         if: startsWith(github.ref, 'refs/tags/')
@@ -35,9 +51,6 @@ jobs:
         run: |
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           test "$TAG_NAME" = "v$PACKAGE_VERSION"
-
-      - name: Build Linux x64 package
-        run: bash scripts/build-release.sh --output-dir dist
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

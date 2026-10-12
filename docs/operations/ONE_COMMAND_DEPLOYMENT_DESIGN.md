@@ -30,7 +30,7 @@ curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/inst
 curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | bash -s -- --address node.example.com
 ```
 
-普通用户在这个例子中将 `bash -s` 换成 `sudo bash -s`。`--address` 用于补充证书身份和客户端配置，监听地址保持 `0.0.0.0`。多个本机地址并存时，脚本列出选择，客户端按实际可达地址接入。
+普通用户在这个例子中将 `bash -s` 换成 `sudo bash -s`。`--address` 用于补充证书身份和客户端配置，监听地址保持 `0.0.0.0`。支持 `--port`、`--run-user remote-exec|root` 和 `--source HTTPS发布目录`。默认从 GitHub 稳定发布解析并固定版本；重复安装沿用已安装版本，不自动升级。多个本机地址并存时，脚本列出选择，客户端按实际可达地址接入。
 
 ## 脚本只做五件事
 
@@ -54,6 +54,19 @@ curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/inst
 
 只需交付安装脚本、自包含运行包和一个 systemd unit。客户端接入沿用现有配置方式。
 
-发布前验证四件事：干净机器一条命令安装成功，机器重启后服务可用，同一命令执行两次凭据保持有效，下载或启动失败能明确报错并安全重试。当前实现通过 `npm run test:install` 在隔离 Linux 环境执行这些验收。
+- 发布前验证四件事：干净机器一条命令安装成功，服务停止后再次执行能恢复，同一命令执行两次凭据保持有效，下载或启动失败能明确报错并安全重试。`npm run test:install` 使用 bubblewrap 隔离系统目录、模拟 systemd 入口，执行真实 HTTPS 下载与 TLS/WSS 测试。发布流程再使用正式包在 Debian 12 容器内验证真实 systemd、默认专用用户和容器重启后的自动恢复，测试不重启宿主机。
+
+构建与正式包验收：
+
+```bash
+npm ci
+bash scripts/build-release.sh
+INSTALL_PACKAGE="$PWD/dist/remote-exec-linux-x64.tar.gz" npm run test:install
+docker build -t remote-exec-install-systemd:test test/install
+INSTALL_SYSTEMD=1 INSTALL_PACKAGE="$PWD/dist/remote-exec-linux-x64.tar.gz" npm run test:install
+```
+
+构建默认携带 Node 24.13.1，使用 Node 官方 HTTPS 发布包与 SHA-256 清单校验。构建端需要 Node/npm、tar/xz 等工具。安装测试需要 Linux x86_64、bubblewrap 和可用用户命名空间，真实 systemd 测试需要 Docker。tag `v<package.json版本>` 触发 `.github/workflows/release.yml`，全部验证通过后发布安装脚本、包和校验文件。
+
 
 该安装方式后续可以采用短暂重启来升级。需要单端口无中断升级的设备，单独按[现有升级方案](REMOTE_EXEC_ZERO_DOWNTIME_UPGRADE.md)部署 supervisor；从直接 daemon 迁移到稳定入口需要一次受控切换。

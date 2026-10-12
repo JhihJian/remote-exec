@@ -39,6 +39,12 @@ function makeCertificate(root) {
 }
 
 function makePackage(root) {
+  if (process.env.INSTALL_PACKAGE) {
+    const bytes = fs.readFileSync(process.env.INSTALL_PACKAGE);
+    const checksum = fs.readFileSync(`${process.env.INSTALL_PACKAGE}.sha256`, "utf8").trim().split(/\s+/)[0];
+    if (checksum !== crypto.createHash("sha256").update(bytes).digest("hex")) throw new Error("正式包与构建校验文件不一致");
+    return { bytes, checksum };
+  }
   const packageRoot = path.join(root, "package");
   fs.mkdirSync(packageRoot, { recursive: true });
   fs.cpSync(path.join(projectRoot, "src"), path.join(packageRoot, "src"), { recursive: true });
@@ -112,6 +118,22 @@ case "$1" in
   *) echo "fixture systemctl 不支持: $*" >&2; exit 2 ;;
 esac
 `);
+  fs.writeFileSync(path.join(bin, "curl"), `#!/usr/bin/env bash
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    https://github.com/JhihJian/remote-exec/releases/latest)
+      echo "$arg" >>/run/fixture/downloads
+      arg="$SOURCE_URL/github/latest" ;;
+    https://github.com/JhihJian/remote-exec/releases/download/*)
+      echo "$arg" >>/run/fixture/downloads
+      arg="$SOURCE_URL/github/\${arg#https://github.com/JhihJian/remote-exec/releases/download/}" ;;
+  esac
+  args+=("$arg")
+done
+exec /usr/bin/curl "\${args[@]}"
+`);
+  fs.chmodSync(path.join(bin, "curl"), 0o755);
   fs.writeFileSync(path.join(bin, "journalctl"), "#!/usr/bin/env bash\ncat /run/fixture/remote-exec.log 2>/dev/null || true\n");
   fs.chmodSync(path.join(bin, "systemctl"), 0o755);
   fs.chmodSync(path.join(bin, "journalctl"), 0o755);
@@ -149,16 +171,21 @@ head -n -1 /tmp/install.sh >/tmp/truncated-install.sh
 bash /tmp/truncated-install.sh --address 127.0.0.1 --port "$SERVICE_PORT" --run-user root --source "$SOURCE_URL" >/tmp/truncated.out 2>&1
 [[ ! -e /opt/remote-exec ]] || { echo '截断脚本执行了安装入口' >&2; exit 1; }
 
+# 首次下载校验失败不能创建安装目录或凭据。
+expect_fail run_install --source "$BAD_SOURCE_URL"
+grep -q 'SHA-256' /tmp/expect.out || { cat /tmp/expect.out >&2; exit 1; }
+[[ ! -e /opt/remote-exec && ! -e /etc/remote-exec && ! -e /root/remote-exec-access ]]
+
 # systemctl fixture 强制第一次启动失败，验证凭据在失败后留下且下一次可以恢复。
 touch /run/fixture/fail-start
-expect_fail run_install --source "$SOURCE_URL"
+expect_fail run_install
 [[ -s /root/remote-exec-access/token.txt ]] || { cat /tmp/expect.out >&2; echo '启动失败后 token 未保留' >&2; exit 1; }
 [[ ! -e /run/fixture/remote-exec.pid ]] || { echo '启动失败后服务仍存活' >&2; exit 1; }
 token_before=$(cat /root/remote-exec-access/token.txt)
 rm /run/fixture/fail-start
 
 # 首次成功走真实 HTTPS 下载、SHA-256 校验、TLS/WSS smoke 和实际 daemon。
-run_install --source "$SOURCE_URL" || { cat /run/fixture/remote-exec.log >&2; exit 1; }
+run_install || { cat /run/fixture/remote-exec.log >&2; exit 1; }
 [[ "$(sha256sum /root/remote-exec-access/token.txt | awk '{print $1}')" == "$(cat /etc/remote-exec/credentials/token.sha256)" ]] || { echo 'token hash mismatch' >&2; exit 1; }
 [[ -s /run/fixture/remote-exec.pid ]] || { cat /run/fixture/remote-exec.log >&2; exit 1; }
 pid_before=$(cat /run/fixture/remote-exec.pid)
@@ -166,15 +193,17 @@ token_after=$(cat /root/remote-exec-access/token.txt)
 [[ "$token_before" == "$token_after" ]] || { echo '重试时 token 被轮换' >&2; exit 1; }
 
 # 同一命令重跑不重启进程，也不改变凭据。
-run_install --source "$SOURCE_URL"
+run_install
 [[ "$pid_before" == "$(cat /run/fixture/remote-exec.pid)" ]] || { echo '相同命令重跑改变了 PID' >&2; exit 1; }
 [[ "$token_after" == "$(cat /root/remote-exec-access/token.txt)" ]] || { echo '相同命令重跑改变了 token' >&2; exit 1; }
 
 # 停止服务后再次安装必须恢复服务。
 systemctl disable --now remote-exec.service
 [[ ! -e /run/fixture/remote-exec.pid ]] || { echo 'stop 后 daemon 仍存活' >&2; exit 1; }
-run_install --source "$SOURCE_URL"
+run_install
 systemctl is-active --quiet remote-exec.service
+[[ "$(grep -c 'releases/latest$' /run/fixture/downloads)" == 1 ]]
+grep -q 'releases/download/v' /run/fixture/downloads
 
 # smoke 使用错误 token 必须被真实 WSS 服务拒绝。
 printf '%s\n' wrong-token >/tmp/wrong-token
@@ -187,16 +216,56 @@ expect_fail bash /tmp/install.sh --address 127.0.0.1 --port "$SERVICE_PORT" --ru
 [[ "$installed_hash" == "$(sha256sum /opt/remote-exec/install.json)" ]] || { echo '错误 hash 改写了安装目录' >&2; exit 1; }
 [[ "$token_after" == "$(cat /root/remote-exec-access/token.txt)" ]] || { echo '错误 hash 改写了 token' >&2; exit 1; }
 
+# 验证实际导出的客户端地址和端口。
+/opt/remote-exec/runtime/bin/node -e 'const cfg=require("/root/remote-exec-access/hosts.json");const h=Object.values(cfg.hosts)[0];if(h.host!=="127.0.0.1"||h.port!==Number(process.argv[1]))throw Error("客户端配置地址或端口无效")' "$SERVICE_PORT"
+[[ "$(stat -c %a /root/remote-exec-access/token.txt)" == 600 ]]
+[[ "$(stat -c %a /etc/remote-exec/credentials/server.key)" == 600 ]]
+
 echo 'install runner: all checks passed'
 `;
+}
+
+async function systemdTest(certificate, sourcePort) {
+  const name = `rex-install-${crypto.randomBytes(6).toString("hex")}`;
+  const image = process.env.INSTALL_SYSTEMD_IMAGE || "remote-exec-install-systemd:test";
+  const port = sourcePort + 1;
+  const docker = (...args) => mustRun("docker", args, { timeout: 60000 });
+  const exec = (script) => docker("exec", name, "bash", "-ec", script);
+  const install = `CURL_CA_BUNDLE=/tmp/source.crt bash /tmp/install.sh --source https://127.0.0.1:${sourcePort}/release --address 127.0.0.1 --port ${port}`;
+  try {
+    docker("run", "--privileged", "--network", "host", "-d", "--name", name, image);
+    exec('for n in {1..30}; do state=$(systemctl show -p SystemState --value 2>/dev/null || true); if [[ "$state" == running || "$state" == degraded ]]; then exit 0; fi; sleep 1; done; exit 1');
+    docker("cp", installScript, `${name}:/tmp/install.sh`);
+    docker("cp", certificate.cert, `${name}:/tmp/source.crt`);
+    // 异步执行使本进程可持续响应 HTTPS 下载。
+    const executeInstall = () => new Promise((resolve, reject) => {
+      const child = childProcess.spawn("docker", ["exec", name, "bash", "-ec", install], { stdio: "inherit" });
+      child.once("error", reject);
+      child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`systemd 安装失败: ${code}`)));
+    });
+    await executeInstall();
+    const before = exec("systemctl show remote-exec -p MainPID --value; sha256sum /root/remote-exec-access/token.txt").stdout;
+    await executeInstall();
+    const after = exec("systemctl show remote-exec -p MainPID --value; sha256sum /root/remote-exec-access/token.txt").stdout;
+    if (before !== after) throw new Error("真实 systemd 重复安装改变了 PID 或凭据");
+    exec("systemctl is-active --quiet remote-exec; systemctl is-enabled --quiet remote-exec; test \"$(systemctl show remote-exec -p User --value)\" = remote-exec");
+    exec(`/opt/remote-exec/runtime/bin/node -e 'const h=Object.values(require("/root/remote-exec-access/hosts.json").hosts)[0];if(h.host!=="127.0.0.1"||h.port!==${port})throw Error("客户端接入配置错误")'`);
+    docker("restart", name);
+    exec(`for n in {1..20}; do if /opt/remote-exec/runtime/bin/node /opt/remote-exec/scripts/smoke.js --port ${port} --ca /etc/remote-exec/credentials/server.crt --token-file /root/remote-exec-access/token.txt --expected-user remote-exec; then exit 0; fi; sleep 1; done; exit 1`);
+    console.log("PASS 正式包、专用用户、真实 systemd、重复安装与重启后恢复");
+  } finally {
+    run("docker", ["rm", "-f", name], { timeout: 30000, stdio: "ignore" });
+  }
 }
 
 async function main() {
   if (process.platform !== "linux" || process.arch !== "x64") throw new Error("install runner 仅支持 Linux x86_64");
   if (!fs.existsSync(installScript)) throw new Error(`缺少安装脚本: ${installScript}`);
-  if (childProcess.spawnSync("bwrap", ["--version"], { stdio: "ignore" }).status !== 0) throw new Error("缺少 bwrap，无法执行安装测试");
-  const probe = run("bwrap", ["--share-net", "--unshare-user", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "true"], { stdio: "ignore" });
-  if (probe.status !== 0) throw new Error("bwrap 不可用：无法创建 uid0 user namespace，安装测试拒绝静默跳过");
+  if (!process.env.INSTALL_SYSTEMD) {
+    if (childProcess.spawnSync("bwrap", ["--version"], { stdio: "ignore" }).status !== 0) throw new Error("缺少 bwrap，无法执行安装测试");
+    const probe = run("bwrap", ["--share-net", "--unshare-user", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "true"], { stdio: "ignore" });
+    if (probe.status !== 0) throw new Error("bwrap 不可用：无法创建 uid0 user namespace，安装测试拒绝静默跳过");
+  }
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remote-exec-install-runner-"));
   let server;
@@ -207,6 +276,15 @@ async function main() {
     const badBytes = Buffer.concat([source.bytes, Buffer.from("corrupt")]);
     const sourcePort = await new Promise((resolve, reject) => {
       server = https.createServer({ key: fs.readFileSync(certificate.key), cert: fs.readFileSync(certificate.cert) }, (request, response) => {
+        if (request.url.endsWith("/github/latest")) {
+          response.writeHead(302, { location: `/release/github/tag/v${packageVersion}` });
+          response.end();
+          return;
+        }
+        if (request.url.includes("/github/tag/")) {
+          response.end("version");
+          return;
+        }
         const bad = request.url.startsWith("/bad");
         if (!request.url.endsWith(".sha256")) {
           response.writeHead(200, { "content-type": "application/gzip" });
@@ -220,6 +298,11 @@ async function main() {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => resolve(server.address().port));
     });
+    if (process.env.INSTALL_SYSTEMD) {
+      if (!process.env.INSTALL_PACKAGE) throw new Error("真实 systemd 验收需通过 INSTALL_PACKAGE 指定正式构建包");
+      await systemdTest(certificate, sourcePort);
+      return;
+    }
     fs.copyFileSync(installScript, path.join(root, "tmp/install.sh"));
     fs.writeFileSync(path.join(root, "tmp/scenario.sh"), scenarioScript());
     fs.chmodSync(path.join(root, "tmp/install.sh"), 0o755);

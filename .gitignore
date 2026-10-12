@@ -3,3 +3,6 @@
 
 # 依赖安装目录
 node_modules/
+
+# 自包含发布包
+dist/

@@ -244,6 +244,55 @@
           }
         }
       ]
+    },
+    {
+      "id": "SC-ONE-COMMAND-INSTALL-001",
+      "status": "active",
+      "rule": "对支持范围内的 Linux x86_64 主机，安装入口下载并校验自包含运行包，生成或保留 TLS 与 token 凭据，创建专用用户 systemd 服务，并通过真实 TLS、token、WebSocket 和命令验收后报告安装成功。",
+      "document": {
+        "path": "docs/architecture/ARCHITECTURE.md",
+        "anchor": "一键安装能力"
+      },
+      "intentEvidence": [
+        {
+          "path": "docs/operations/ONE_COMMAND_DEPLOYMENT_DESIGN.md",
+          "locator": "## 核心方案"
+        }
+      ],
+      "currentEvidence": [
+        {
+          "path": "scripts/install.sh",
+          "locator": "main()"
+        },
+        {
+          "path": "test/install/runner.js",
+          "locator": "install runner: all checks passed"
+        }
+      ],
+      "behaviors": [
+        {
+          "id": "BC-ONE-COMMAND-INSTALL-001-NORMAL",
+          "kind": "normal",
+          "rule": "首次安装完成后，systemd 服务处于 active/enabled，客户端凭据已生成，真实 TLS、token、WebSocket 和命令验收成功。",
+          "outcome": "用户获得可开机运行的 remote-exec 服务和客户端接入资料。",
+          "test": {
+            "path": "test/install/runner.js",
+            "locator": "首次成功走真实 HTTPS 下载、SHA-256 校验、TLS/WSS smoke 和实际 daemon。",
+            "oracle": "安装成功输出，服务 active/enabled，真实 smoke 通过。"
+          }
+        },
+        {
+          "id": "BC-ONE-COMMAND-INSTALL-001-VARIANT",
+          "kind": "variant",
+          "rule": "重复执行保持既有 token 和健康服务；下载校验或启动失败时不覆盖既有安装，修复原因后可以重试。",
+          "outcome": "重复安装不会使客户端凭据失效，失败安装不会破坏既有服务。",
+          "test": {
+            "path": "test/install/runner.js",
+            "locator": "同一命令重跑不重启进程，也不改变凭据。",
+            "oracle": "PID 与 token 保持不变，错误 hash 不改变安装文件，启动失败后下一次安装恢复成功。"
+          }
+        }
+      ]
     }
   ]
 }

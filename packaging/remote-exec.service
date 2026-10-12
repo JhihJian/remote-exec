@@ -1,0 +1,21 @@
+[Unit]
+Description=remote-exec TLS remote execution service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=/var/lib/remote-exec
+ExecStart=/opt/remote-exec/runtime/bin/node /opt/remote-exec/src/daemon/main.js --host 0.0.0.0 --port @PORT@ --cert /etc/remote-exec/credentials/server.crt --key /etc/remote-exec/credentials/server.key --token-sha256-file /etc/remote-exec/credentials/token.sha256
+Environment=HOME=/var/lib/remote-exec
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=35
+KillMode=control-group
+UMask=0077
+@CAPABILITIES@
+
+[Install]
+WantedBy=multi-user.target

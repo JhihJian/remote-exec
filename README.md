@@ -305,9 +305,24 @@ ssh user@host 'mkdir -p ~/remote-exec && tar -xzf ~/remote-exec-1.0.0.tgz -C ~/r
 ssh user@host 'cd ~/remote-exec && npm install --omit=dev'
 ```
 
-生产环境建议使用 systemd 或其他进程管理器运行，并为 daemon 配置专用用户、工作目录、证书权限、日志轮转和防火墙规则。具体主机的部署自动化应由使用方根据自身网络、用户和凭证管理方式维护。目标一键部署流程见[一键部署设计方案](docs/operations/ONE_COMMAND_DEPLOYMENT_DESIGN.md)，该方案尚未实现。
+生产环境建议使用 systemd 或其他进程管理器运行，并为 daemon 配置专用用户、工作目录、证书权限、日志轮转和防火墙规则。具体主机的部署自动化应由使用方根据自身网络、用户和凭证管理方式维护。当前项目提供 Linux x86_64 的一键安装入口，详见[一键安装方案](docs/operations/ONE_COMMAND_DEPLOYMENT_DESIGN.md)。
 
-## 单一外部端口无中断升级
+## 一键安装
+
+支持 Ubuntu 22.04/24.04、Debian 12 的 Linux x86_64 主机。用户通过 SSH 登录后执行：
+
+```bash
+curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | bash
+```
+
+普通用户在命令末尾使用 `| sudo bash`。安装脚本会下载自带 Node.js 和运行依赖的版本包，生成 TLS 证书和 token，安装专用用户运行的 systemd 服务，并执行真实 TLS、token、WSS 和命令验收。默认端口为 `8791`，客户端实际访问的 DNS 名或 IP 可用 `--address` 指定：
+
+```bash
+curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | bash -s -- --address node.example.com
+```
+
+安装成功后，客户端接入资料保存在 `/root/remote-exec-access.tar.gz`。服务只负责目标机上的安装和验收，防火墙、云安全组和客户端配置仍按网络环境配置。完整参数和失败处理见[一键安装方案](docs/operations/ONE_COMMAND_DEPLOYMENT_DESIGN.md)。
+
 
 稳定入口由 `src/supervisor/` 提供，daemon generation 使用不同的回环端口。升级流程只有三个动作：先启动并验证候选版本，再切换新连接，最后在回滚窗口关闭且旧连接归零后 retire 旧版本。
 

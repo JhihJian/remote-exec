@@ -13,8 +13,9 @@
     "test:supervisor": "node test/supervisor/supervisor.js",
     "test:upgrade": "node test/upgrade/upgrade.js",
     "test:lifecycle": "node test/daemon/lifecycle.js",
+    "test:install": "node test/install/runner.js",
     "test:integration": "node test/integration/runner.js",
-    "test": "npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:upgrade && npm run test:integration",
+    "test": "npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:upgrade && npm run test:install && npm run test:integration",
     "start": "node src/daemon/main.js"
   },
   "keywords": [],

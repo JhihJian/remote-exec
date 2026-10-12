@@ -151,7 +151,7 @@
       "evidence": [
         {
           "path": "package.json",
-          "locator": "\"test\": \"npm run check && npm run typecheck && npm run test:extension && npm run test:lifecycle && npm run test:supervisor && npm run test:upgrade && npm run test:integration\""
+          "locator": "\"test\": \"npm run check"
         },
         {
           "path": "test/integration/runner.js",
@@ -160,6 +160,25 @@
         {
           "path": "test/integration/runner.js",
           "locator": "server = spawn(process.execPath, ["
+        }
+      ]
+    },
+    {
+      "id": "one-command-install-boundary",
+      "conclusion": "支持范围内的 Linux x86_64 主机可以通过发布入口安装 remote-exec daemon。安装入口下载包含 Node.js 和运行依赖的版本包，生成 TLS 与 token 凭据，创建 systemd 服务并执行真实 TLS、token、WebSocket 和命令验收。daemon 以专用服务用户运行，凭据与客户端接入资料分别保存。安装脚本支持重复执行、启动失败后重试和错误包校验保护；它不负责防火墙、云安全组或客户端机器配置。",
+      "documentRole": "overview",
+      "evidence": [
+        {
+          "path": "scripts/install.sh",
+          "locator": "main()"
+        },
+        {
+          "path": "test/install/runner.js",
+          "locator": "install runner: all checks passed"
+        },
+        {
+          "path": "packaging/remote-exec.service",
+          "locator": "ExecStart="
         }
       ]
     }

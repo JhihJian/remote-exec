@@ -75,7 +75,18 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 | TUI 适配层 | 为终端用户调用 Node.js 客户端能力 | `src/tui/`，关键文件 `app.js` |
 | Pi 适配层 | 注册远程工具，独立实现受协议回归测试约束的客户端 | `pi-extension/`，关键文件 `remote-exec.ts` |
 
-## 稳定边界
+## 一键安装能力
+
+对支持范围内的 Linux x86_64 主机，安装入口下载并校验自包含运行包，生成或保留 TLS 与 token 凭据，创建专用用户 systemd 服务，并通过真实 TLS、token、WebSocket 和命令验收后报告安装成功。
+
+首次安装完成后，systemd 服务处于 active/enabled，客户端凭据已生成，真实 TLS、token、WebSocket 和命令验收成功。
+
+重复执行保持既有 token 和健康服务；下载校验或启动失败时不覆盖既有安装，修复原因后可以重试。
+
+支持范围内的 Linux x86_64 主机可以通过发布入口安装 remote-exec daemon。安装入口下载包含 Node.js 和运行依赖的版本包，生成 TLS 与 token 凭据，创建 systemd 服务并执行真实 TLS、token、WebSocket 和命令验收。daemon 以专用服务用户运行，凭据与客户端接入资料分别保存。安装脚本支持重复执行、启动失败后重试和错误包校验保护；它不负责防火墙、云安全组或客户端机器配置。
+
+安装代码位于 `scripts/install.sh`、`scripts/build-release.sh`、`packaging/remote-exec.service` 和 `test/install/runner.js`。安装器直接启动单一 daemon，supervisor 与无中断升级属于独立部署路径。发布工作流位于 `.github/workflows/release.yml`，为 Linux x86_64 生成自包含包并发布安装入口。
+
 
 daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器；固定入口 supervisor 通过原始 TCP 将新连接分配到 active generation。
 

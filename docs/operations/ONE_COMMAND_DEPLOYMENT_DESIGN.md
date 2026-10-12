@@ -6,20 +6,20 @@
 
 首次安装直接运行 daemon。现有 supervisor 和无中断升级机制保持独立，首次安装无需引入多版本管理和切换事务。
 
-状态：待实现设计。以下地址为示例，发布时替换为真实下载地址。
+状态：已实现首版，安装脚本、自包含发布包和 systemd unit 已纳入代码。支持范围与验证结果以 README 和测试为准。
 
 ## 用户怎么安装
 
 root 用户执行：
 
 ```bash
-curl -fsSL https://downloads.example.com/remote-exec/install.sh | bash
+curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | bash
 ```
 
 普通用户执行：
 
 ```bash
-curl -fsSL https://downloads.example.com/remote-exec/install.sh | sudo bash
+curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | sudo bash
 ```
 
 普通用户可能需要输入 sudo 密码。完全无人值守时，需要 root 或免密 sudo。
@@ -27,7 +27,7 @@ curl -fsSL https://downloads.example.com/remote-exec/install.sh | sudo bash
 脚本默认监听 `0.0.0.0:8791`，从机器已有的非回环 IPv4 地址生成证书 SAN，并加入 hostname、localhost 和 127.0.0.1。安装结束列出可用地址。客户端通过域名、NAT 地址或其他未列出的地址连接时，在同一条命令后补充参数：
 
 ```bash
-curl -fsSL https://downloads.example.com/remote-exec/install.sh | bash -s -- --address node.example.com
+curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | bash -s -- --address node.example.com
 ```
 
 普通用户在这个例子中将 `bash -s` 换成 `sudo bash -s`。`--address` 用于补充证书身份和客户端配置，监听地址保持 `0.0.0.0`。多个本机地址并存时，脚本列出选择，客户端按实际可达地址接入。
@@ -54,6 +54,6 @@ curl -fsSL https://downloads.example.com/remote-exec/install.sh | bash -s -- --a
 
 只需交付安装脚本、自包含运行包和一个 systemd unit。客户端接入沿用现有配置方式。
 
-发布前验证四件事：干净机器一条命令安装成功，机器重启后服务可用，同一命令执行两次凭据保持有效，下载或启动失败能明确报错并安全重试。
+发布前验证四件事：干净机器一条命令安装成功，机器重启后服务可用，同一命令执行两次凭据保持有效，下载或启动失败能明确报错并安全重试。当前实现通过 `npm run test:install` 在隔离 Linux 环境执行这些验收。
 
 该安装方式后续可以采用短暂重启来升级。需要单端口无中断升级的设备，单独按[现有升级方案](REMOTE_EXEC_ZERO_DOWNTIME_UPGRADE.md)部署 supervisor；从直接 daemon 迁移到稳定入口需要一次受控切换。

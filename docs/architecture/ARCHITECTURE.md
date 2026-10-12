@@ -6,58 +6,48 @@ remote-exec 在受信任的 Linux 主机上通过 TLS、Bearer token 和 JSON-RP
 
 ## 系统边界
 
+客户端运行在 daemon 进程之外：TUI 调用 Node.js 客户端库，Pi extension 在 Pi 中提供远程工具。它们通过 HTTPS 或 WSS 连接 daemon。部署启用 supervisor 时，supervisor 作为独立进程持有固定入口，把连接转发给当前 daemon 版本；TLS 和 Token 验证仍在 daemon 内完成。
+
+### Daemon 进程内分层
+
+从上到下阅读下图。上层可使用下层，允许跨层使用；相邻层之间的箭头表示依赖方向。通用的跨层依赖省略，请求按各自功能访问需要的层。
+
 ```mermaid
-C4Component
-title remote-exec 组件图
-Person(caller, "调用方", "终端用户、Node.js 程序或 Pi Agent")
-System_Boundary(remoteExec, "remote-exec") {
-    Component(tui, "TUI 适配层", "Node.js CLI", "选择主机，提交命令并展示结果")
-    Component(nodeClient, "Node.js 客户端", "Node.js API", "加载主机配置，编排直连、单跳 relay 和文件传输")
-    Component(piExtension, "Pi 适配层", "Pi extension", "注册远程工具，独立实现协议连接与结果投影")
-    Component(supervisor, "稳定入口 supervisor", "Node.js TCP 转发", "持有固定入口，验证并切换 generation，保留旧连接和回滚窗口")
-    Container_Boundary(daemonGeneration, "Daemon generation · Node.js 进程") {
-        Component(lifecycle, "启动与生命周期协调", "main.js / lifecycle.js", "组装服务，管理就绪状态、资源计数和进程内排空")
-        Component(transport, "协议适配", "HTTP(S) / WebSocket JSON", "健康检查、入口鉴权、RPC 会话与分发、HTTP 流式文件传输")
-        Component(operations, "远程操作", "bash / 文件 RPC / WSS relay", "执行命令、读写文件，限制 relay 目标并转发结果")
-        Component(shared, "认证与基础支持", "Token SHA-256 / 日志 / RPC 错误 / 限额", "验证凭证，提供统一日志、错误构造和运行限额")
-    }
-}
-System_Ext(hostRuntime, "受管主机运行时", "bash、文件系统和进程组")
-System_Ext(relayTarget, "目标 daemon", "经受限内网访问")
-Rel(caller, tui, "选择主机并提交命令", "CLI")
-Rel(caller, nodeClient, "提交远程操作", "Node.js API")
-Rel(caller, piExtension, "调用远程工具", "Pi tools")
-Rel(tui, nodeClient, "调用并展示结果", "Node.js API")
-Rel(nodeClient, transport, "直连命令、文件或 relay 请求", "TLS + Bearer token + WSS/HTTPS")
-Rel(piExtension, transport, "直连命令、文件或 relay 请求", "TLS + Bearer token + WSS/HTTPS")
-Rel(nodeClient, supervisor, "连接稳定入口", "TLS + WSS/HTTPS over TCP")
-Rel(piExtension, supervisor, "连接稳定入口", "TLS + WSS/HTTPS over TCP")
-Rel(supervisor, transport, "探测就绪，将新连接转发到 active generation，保留已有连接", "本机 TCP / TLS readiness")
-Rel(lifecycle, transport, "启动服务，协调就绪与排空后的关闭", "进程内生命周期")
-Rel(transport, lifecycle, "判断接纳状态，登记和释放资源，注册强制关闭回调", "进程内资源协调")
-Rel(transport, operations, "分发 RPC，交付结果与流式事件，断连时调用取消回调", "操作函数 / 事件发送 / 取消回调")
-Rel(lifecycle, shared, "加载凭证摘要、默认配置并记录启动日志", "启动配置")
-Rel(transport, shared, "验证入口 Token，记录会话日志并构造 RPC 错误", "认证与错误处理")
-Rel(operations, shared, "使用运行限额，构造操作错误并记录 relay 日志", "操作支持")
-Rel(operations, hostRuntime, "启动和终止命令进程组，读写文件 RPC", "bash / 文件系统")
-Rel(operations, relayTarget, "校验证书并单跳转发允许的 RPC", "TLS + Bearer token + WSS")
-Rel(transport, hostRuntime, "直接流式上传下载，提交临时文件并计算上传 SHA-256", "文件系统")
+flowchart TB
+    subgraph daemon["Daemon 进程"]
+        startup["启动组装层<br/>解析参数 · 创建服务 · 处理进程信号"]
+        transport["协议适配层<br/>HTTP 路由与认证 · RPC 会话与分发 · HTTP 文件流"]
+        operations["远程操作层<br/>命令执行 · 文件 RPC · 单跳 relay"]
+        support["基础支持层<br/>生命周期协调 ｜ Token 验证 · 日志 · RPC 错误 · 配置"]
+        startup --> transport --> operations --> support
+    end
+    environment["本机运行环境<br/>Node.js · bash · 文件系统 · 进程 · 网络"]
+    support --> environment
 ```
 
-图中的 daemon generation 边界对应一个服务进程。协议适配负责 HTTP 文件流并直接访问文件系统，文件 RPC 则由远程操作组件处理。supervisor 管理 generation 切换与回收，daemon 内的生命周期协调管理本进程的请求接纳和资源排空。
+命令和文件 RPC 由协议适配层分发到远程操作层。HTTP 上传下载由协议适配层直接处理文件流、访问本机文件系统。各上层按需使用基础支持层的认证、日志、错误和配置。生命周期协调负责就绪状态、资源计数和排空，资源所有者注册具体清理回调，由协调器在排空期限到达时调用。
 
-| 组件 | 职责 | 代码映射 |
+“本机运行环境”就是运行 daemon 的那台机器提供的程序与资源：执行命令使用 bash 和进程，读写文件使用文件系统，建立连接使用网络。
+
+relay 请求会让远程操作层连接另一台机器上的 daemon，再把命令或文件 RPC 转发过去。relay 的目标 daemon 就是这台远端服务，它运行同样的协议，属于跨机器的部署关系。
+
+| 层次 | 职责 | 代码映射 |
 | --- | --- | --- |
-| 启动与生命周期协调 | 解析参数、组装服务、处理进程信号，管理就绪状态和资源排空 | `src/daemon/`，关键文件 `main.js`、`lifecycle.js` |
-| 协议适配 | HTTP(S) 路由与鉴权、WebSocket 会话与 RPC 分发、HTTP 流式上传下载 | `src/daemon/transport/`，关键文件 `http-server.js`、`rpc-server.js`、`file-transfer.js` |
-| 远程操作 | 命令执行、文件 RPC、relay 目标限制和流式转发 | `src/daemon/operations/`，关键文件 `exec.js`、`files.js`、`relay.js` |
-| 认证与基础支持 | Token 摘要加载和验证、日志、RPC 错误构造、限额与默认配置 | `src/daemon/shared/`，关键文件 `auth.js`、`log.js`、`rpc-error.js`、`constants.js` |
+| 启动组装层 | 解析参数、组装服务、监听端口和处理进程信号 | `src/daemon/main.js` |
+| 协议适配层 | HTTP(S) 路由与鉴权、WebSocket 会话与 RPC 分发、HTTP 流式上传下载 | `src/daemon/transport/`，关键文件 `http-server.js`、`rpc-server.js`、`file-transfer.js` |
+| 远程操作层 | 命令执行、文件 RPC、relay 目标限制和流式转发 | `src/daemon/operations/`，关键文件 `exec.js`、`files.js`、`relay.js` |
+| 基础支持层：生命周期协调 | 就绪状态、资源计数、排空和清理回调协调 | `src/daemon/lifecycle.js` |
+| 基础支持层：共享功能 | Token 摘要加载和验证、日志、RPC 错误、限额与默认配置 | `src/daemon/shared/`，关键文件 `auth.js`、`log.js`、`rpc-error.js`、`constants.js` |
+| 本机运行环境 | 为各上层提供程序、文件系统、进程和网络 | Node.js 与操作系统提供，位于项目源码之外 |
+
+进程外的入口与调用方映射如下：
+
+| 模块 | 职责 | 代码映射 |
+| --- | --- | --- |
 | 稳定入口 supervisor | 持有固定 TCP 入口，管理 generation 切换、回滚窗口和 retire | `src/supervisor/`，关键文件 `main.js`、`supervisor.js` |
 | Node.js 客户端 | 读取主机配置，建立经证书校验的连接，编排直连、单跳 relay 和文件传输 | `src/client/`，关键文件 `host.js`、`transfer.js` |
 | TUI 适配层 | 为终端用户调用 Node.js 客户端能力 | `src/tui/`，关键文件 `app.js` |
 | Pi 适配层 | 注册远程工具，独立实现受协议回归测试约束的客户端 | `pi-extension/`，关键文件 `remote-exec.ts` |
-| 受管主机运行时 | 提供 `bash -lc`、进程组和文件系统 | 外部运行时，由受管 Linux 主机提供 |
-| 目标 daemon | 接收网关允许的单跳 RPC 请求 | 外部服务，运行同一 daemon 协议 |
 
 ## 稳定边界
 

@@ -14,7 +14,7 @@ remote-exec 在受信任的 Linux 主机上通过 TLS、Bearer token 和 JSON-RP
 
 ```mermaid
 flowchart TB
-    subgraph daemon["Daemon 进程 · src/daemon/"]
+    subgraph daemon["Node Daemon 进程 · src/daemon/"]
         direction TB
         subgraph assembly["启动组装"]
             main["main.js<br/>参数解析 · 服务组装 · 进程信号"]
@@ -47,6 +47,20 @@ flowchart TB
         http -->|HTTP 接纳检查与计数| lifecycle
         rpc -->|连接与请求计数、注册强制关闭| lifecycle
         operations ~~~ foundation
+    end
+    subgraph rust["Rust 原型进程 · prototype/rust-daemon/src/"]
+        rmain["main.rs<br/>TLS 凭据 · 监听 · 连接任务"]
+        rserver["server.rs<br/>HTTP 文件流 · WSS 升级"]
+        rrpc["rpc.rs<br/>会话 · 请求顺序 · 取消"]
+        rexec["exec.rs<br/>Bash 进程组 · 输出"]
+        rfiles["files.rs<br/>文件 RPC · 原子替换"]
+        rauth["auth.rs<br/>token 哈希验证"]
+        rmain -->|创建 TLS 连接并委托服务| rserver
+        rserver -->|移交已认证 WSS 会话| rrpc
+        rserver -->|上传临时文件与下载读取| rfiles
+        rserver -->|入口鉴权| rauth
+        rrpc -->|命令执行与取消| rexec
+        rrpc -->|文件 RPC| rfiles
     end
 ```
 
@@ -81,6 +95,25 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 | TUI 适配层 | 为终端用户调用 Node.js 客户端能力 | `src/tui/`，关键文件 `app.js` |
 | 部署客户端 | 解析直连或网关目标，交互认证，验收并原子登记凭据与配置 | `src/cli/main.js`、`src/deploy/cli.js`、`bundle.js`、`config-store.js`、`prompts.js` |
 | Pi 适配层 | 注册远程工具，独立实现受协议回归测试约束的客户端 | `pi-extension/`，关键文件 `remote-exec.ts` |
+
+## Rust 离线原型边界
+
+Rust 离线原型独立实现 TLS/WSS 命令与文件服务，使用 musl 静态构建和部署端生成的凭据验证小于 1MB 的完整服务器包；正式 Node daemon、relay、SSH 部署和 supervisor 继续独立维护。
+
+Rust 原型保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64、Bash 和可写可执行的目录，安装脚本使用常见系统工具。Rust 原型的 SIGTERM 取消活跃工作，完整迁移还需实现 relay、网关部署、排空升级和弱网 SSH 续传。
+
+Rust 图中调用向下委托，同层协作由明确连线表达，原型与 Node 服务是两个独立交付进程。模块映射如下：
+
+| 模块 | 职责 | 代码映射 |
+| --- | --- | --- |
+| Rust 启动组装 | 凭据、TLS、监听、任务及退出 | `prototype/rust-daemon/src/main.rs` |
+| Rust 协议入口 | HTTP 请求、鉴权、上传下载、WSS 移交 | `prototype/rust-daemon/src/server.rs` |
+| Rust RPC 会话 | 顺序分发、事件发送及断连取消 | `prototype/rust-daemon/src/rpc.rs` |
+| Rust 命令操作 | Bash 进程组、双流、超时与清理 | `prototype/rust-daemon/src/exec.rs` |
+| Rust 文件操作 | 文件 RPC、临时文件和原子替换 | `prototype/rust-daemon/src/files.rs` |
+| Rust token 校验 | 哈希加载、Bearer 校验 | `prototype/rust-daemon/src/auth.rs` |
+
+构建包由 `scripts/build-rust-prototype.sh` 与 `prototype/packaging/` 生成，协议和禁网验证位于 `test/rust-prototype/`。运行条件、测量口径和剩余迁移范围见 [Rust 离线原型](../operations/RUST_OFFLINE_PROTOTYPE.md)。现有顶层能力及其测试归属保持正式 Node 实现。
 
 ## 一键安装能力
 

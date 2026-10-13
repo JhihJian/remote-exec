@@ -1,0 +1,58 @@
+name: Rust 离线原型
+
+on:
+  push:
+    paths:
+      - 'prototype/**'
+      - 'scripts/build-rust-prototype.sh'
+      - 'test/rust-prototype/**'
+      - 'src/client/websocket.js'
+      - '.github/workflows/rust-prototype.yml'
+  pull_request:
+    paths:
+      - 'prototype/**'
+      - 'scripts/build-rust-prototype.sh'
+      - 'test/rust-prototype/**'
+      - 'src/client/websocket.js'
+      - '.github/workflows/rust-prototype.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.97.1'
+          targets: x86_64-unknown-linux-musl
+          components: rustfmt, clippy
+      - name: 安装构建端依赖
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: 检查 Rust 源码
+        run: |
+          cargo fmt --manifest-path prototype/rust-daemon/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path prototype/rust-daemon/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path prototype/rust-daemon/Cargo.toml
+      - name: 构建完整包并检查 1MB 门禁
+        run: bash scripts/build-rust-prototype.sh --address 127.0.0.1
+      - name: 验证现有客户端和异常行为
+        run: node test/rust-prototype/runner.js
+      - name: 准备离线验证镜像
+        run: docker pull debian:12-slim
+      - name: 验证无网络无运行时安装
+        run: bash test/rust-prototype/offline.sh
+      - name: 验证架构状态
+        run: node .agents/architecture-governance/check-state.mjs check --require-active
+      # 包包含服务器私钥，仅归档体积报告，不上传部署包或接入凭据。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-prototype-size
+          path: dist/rust-prototype/size.json

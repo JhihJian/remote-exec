@@ -28,6 +28,8 @@ remote-exec 的主要能力之一，是在**单一外部端口**的设备上进�
 
 原型已覆盖 TLS/WSS、命令与流式输出、文件 RPC、HTTPS 上传下载，并提供现有 Node 客户端互操作和禁网安装验证。relay、网关 SSH 部署、无中断升级和弱网 SSH 续传属于后续迁移范围，正式 Node 服务继续独立维护。构建与安装方法见 [Rust 离线原型](docs/operations/RUST_OFFLINE_PROTOTYPE.md)。
 
+已在 `xiaomi`（Linux 7.0、x86_64）完成实机验证：使用一行免密 SSH 标准输入传包，目标机无 Node、OpenSSL、Cargo，离线安装并以用户级 systemd 运行成功。专用测试端口为 `18791`，TLS/WSS、`exec`、`exec.stream`、文件 RPC、HTTPS 上传下载以及 systemd 重启和 stop/start 均通过，原有 `8791` 服务保持不变。
+
 ## 安全边界
 
 remote-exec 是高权限远程执行服务，适用范围由部署网络和 daemon 运行用户共同决定。
@@ -343,6 +345,18 @@ rex deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.1
 仓库内可用 `./rex.sh deploy ...`，全局命令可通过 `npm install -g .` 安装。部署前确认 SSH 指纹，先尝试免密 SSH，按需无回显询问 SSH 和 sudo 密码。运行包通过 SSH 传入目标，目标无需访问公网。验收通过后自动保存各机凭据、登记直连或 `via` 配置，失败目标不会登记。
 
 `--port` 默认 8791，支持 `--ssh-port`、`--identity`、`--package` 和 `--host-key`。经网关部署需要网关运行当前版本的 `deploy.ssh` 接口，目标 daemon 端口应对网关内网可达。详见 [SSH 批量部署](docs/operations/SSH_DEPLOYMENT.md)。
+
+### Rust 原型一行 SSH 安装
+
+Rust 原型当前使用独立安装入口，不会修改现有 Node daemon，也不会自动创建 systemd unit。适合目标机无公网、无 Node 且需要先验证小包部署的场景。构建端按目标地址生成包后，可通过免密 SSH 标准输入传输并在目标机离线安装：
+
+```bash
+bash scripts/build-rust-prototype.sh --address 192.168.1.63 --port 18791 --output-dir dist/rust-xiaomi
+cat dist/rust-xiaomi/remote-exec-rust-prototype-linux-x64.tar.gz | \
+  ssh 63 'set -e; base="$HOME/remote-exec-rust-test"; rm -rf "$base"; mkdir -m 700 "$base"; mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; bash "$base/installed/run.sh"'
+```
+
+上面的命令以前台方式启动服务，常驻运行应由目标机的 systemd、OpenRC 或其他进程管理器托管。包传输完成后目标机不执行 Node、Cargo、OpenSSL 或 npm。当前 Rust 原型支持 Linux x86_64，完整包构建时强制小于 `1,000,000` 字节；relay、网关 SSH 部署、无中断升级和 SSH 断点续传仍沿用 Node 正式路径，尚未迁移。
 
 ## 单一外部端口无中断升级
 

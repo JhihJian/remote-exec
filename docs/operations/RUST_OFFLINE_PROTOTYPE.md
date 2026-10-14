@@ -14,7 +14,7 @@ Rust 原型用于验证小于 1MB 的离线部署包：Linux 目标机通过 SSH
 | TLS 鉴权、命令、文件协议与异常输入 | 持久化回归测试覆盖 |
 | relay、`deploy.ssh`、supervisor 排空与无中断升级 | 后续迁移范围，原型未知方法返回 `-32601` |
 | SSH 上传断点续传、自动登记主机、开机启动 | 后续部署流程范围 |
-| ARM、其他内核与真实目标设备 | 待取得设备事实后验证 |
+| ARM、其他内核与其他真实目标设备 | 待取得设备事实后验证 |
 
 ## 模块职责
 
@@ -67,6 +67,18 @@ bash /ABSOLUTE/PATH/remote-exec-rust-prototype/run.sh
 
 安装器复制到独立的新目录，不修改正式服务。`run.sh` 监听 `0.0.0.0`，使用当前用户权限运行。前台退出即停止，原型只适合验证与独立试用。客户端修改 `access/hosts.json` 的 CA 和 token 路径，再合并到现有主机配置。TLS 连接必须信任指定证书并匹配证书 SAN。
 
+### 一行 SSH 安装
+
+已在 xiaomi 实机验证以下用户路径。构建端使用目标地址生成专用包，包通过 SSH 标准输入传输，目标机自动解包并离线安装：
+
+```bash
+bash scripts/build-rust-prototype.sh --address 192.168.1.63 --port 18791 --output-dir dist/rust-xiaomi
+cat dist/rust-xiaomi/remote-exec-rust-prototype-linux-x64.tar.gz | \
+  ssh 63 'set -e; base="$HOME/remote-exec-rust-test"; rm -rf "$base"; mkdir -m 700 "$base"; mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; bash "$base/installed/run.sh"'
+```
+
+这条命令使用免密 SSH，不依赖 `remote_upload` 或目标机公网访问。正式常驻运行需要额外提供目标侧进程管理器 unit；本次 xiaomi 验证创建了独立的用户级 systemd unit `remote-exec-rust-xiaomi-test.service`，并验证了 `enable`、`restart`、`stop/start`、端口恢复和 `NRestarts=0`。测试端口为 `18791`，原有 `8791` 服务未修改，测试结束后已清理 unit、目录和凭据。
+
 ## 验证与测量
 
 ```bash
@@ -85,7 +97,7 @@ bash test/rust-prototype/offline.sh
 
 使用 Rust 1.97.1、`x86_64-unknown-linux-musl`、锁文件和 release 配置，包含许可证及设备凭据的最终服务器包为 **956,142 字节**，解压后的服务二进制为 **1,799,024 字节**。完整包相对 1,000,000 字节上限剩余 43,858 字节。随机凭据与编译器会影响后续构建大小，以每次完整资产测量为准。
 
-16 项外部协议与异常行为检查、2 项 Rust 单元测试、格式和 Clippy 检查、静态链接检查与禁网离线安装启动均已通过。100MB 上传下载的大小与 SHA-256 一致。离线环境验证基于 Debian 12 容器和构建机内核，其他内核及真实目标设备仍需验证。
+16 项外部协议与异常行为检查、2 项 Rust 单元测试、格式和 Clippy 检查、静态链接检查与禁网离线安装启动均已通过。100MB 上传下载的大小与 SHA-256 一致。xiaomi 实机完成 TLS/WSS、命令、流式输出、文件 RPC、HTTPS 上传下载和 systemd 重启验证。离线容器与 xiaomi 使用的内核和 CPU 之外，其他内核及真实目标设备仍需验证。
 
 客户端 token 保留在本机，服务器包只携带哈希。
 

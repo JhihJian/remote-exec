@@ -2,6 +2,8 @@
 
 客户端运行一条命令即可安装并接入目标设备。省略 `--via` 时，客户端直接通过 SSH 部署；指定网关时，由网关执行 SSH，安装完成后通过 relay 使用目标。
 
+本页描述的是 Node 正式 daemon 的 `rex deploy` 路径。Rust 离线原型使用独立的静态包和安装脚本，当前不接入 `rex deploy` 的 `deploy.ssh` 编排；其免密 SSH 一行安装方式见 [Rust 离线原型](RUST_OFFLINE_PROTOTYPE.md)。
+
 ```bash
 rex deploy root@192.168.1.101
 rex deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.16.126.102
@@ -52,3 +54,14 @@ INSTALL_PACKAGE="$PWD/dist/remote-exec-linux-x64.tar.gz" npm run test:deploy
 ```
 
 端到端测试需要 Docker，使用无公网出口、无端口映射的隔离 Debian 12 容器，验证真实 SSH、SFTP、sudo、systemd、指定 daemon 端口、直连和 relay 调用、免密与密码认证、配置登记、重复安装及失败保护。
+
+## Rust 原型的慢速 SSH 路径
+
+Rust 原型的完整服务器包已在 xiaomi 实机验证为 `956,145` 字节。目标机无需 Node、OpenSSL、Cargo 或公网访问。最短安装路径由本机 `cat` 和免密 `ssh` 组成：
+
+```bash
+cat dist/rust-xiaomi/remote-exec-rust-prototype-linux-x64.tar.gz | \
+  ssh 63 'set -e; base="$HOME/remote-exec-rust-test"; rm -rf "$base"; mkdir -m 700 "$base"; mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; bash "$base/installed/run.sh"'
+```
+
+当前命令是单次传输，断线后需要重新传包。SSH 断点续传、远端完整性验收和自动 systemd unit 生成属于 Rust 正式部署流程的后续工作。

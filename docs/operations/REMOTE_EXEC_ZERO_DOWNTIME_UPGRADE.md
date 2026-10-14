@@ -125,7 +125,7 @@ supervisor 通过 Unix socket 提供 `status`、`register`、`start`、`promote`
 
 ## xiaomi 隔离验证
 
-xiaomi 用于验证完整机制，不代表目标设备具备 SSH。测试环境使用独立目录、测试证书、测试 token hash、固定测试入口和两个回环 generation。
+xiaomi 用于验证完整机制，不代表目标设备具备 SSH。测试环境使用独立目录、测试证书、测试 token hash、固定测试入口和两个回环 generation。另有独立的 Rust 离线安装验证，使用端口 `18791` 和用户级 systemd；该验证覆盖离线安装、重启与协议可用性，不属于本节的无中断升级门禁。
 
 ### 基线
 

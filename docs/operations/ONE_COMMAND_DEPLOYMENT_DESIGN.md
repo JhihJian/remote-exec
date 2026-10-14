@@ -25,11 +25,12 @@ curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/inst
 Rust 离线原型使用部署端准备好的完整静态包，通过 SSH 标准输入传输到目标机：
 
 ```bash
-cat dist/rust-xiaomi/remote-exec-rust-prototype-linux-x64.tar.gz | \
-  ssh 63 'set -e; base="$HOME/remote-exec-rust-test"; rm -rf "$base"; mkdir -m 700 "$base"; mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; bash "$base/installed/run.sh"'
+TARGET_SSH=user@host
+PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-x64.tar.gz
+cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; exec bash "$base/installed/run.sh"'
 ```
 
-该路径已在 xiaomi 实机验证。包大小为 `956,145` 字节，目标机不需要 Node、OpenSSL、Cargo 或公网访问。Rust 原型安装脚本复制到独立目录并前台启动，systemd unit 需要单独配置；Node 正式安装器仍负责 root/systemd、自包含 Node 运行时和正式发布验收。
+该路径已在 Linux x86_64 实机验证。完整包约 `0.96 MB`，目标机不需要 Node、OpenSSL、Cargo 或公网访问。Rust 原型安装脚本复制到独立目录并前台启动，systemd unit 需要单独配置；Node 正式安装器仍负责 root/systemd、自包含 Node 运行时和正式发布验收。
 
 普通用户可能需要输入 sudo 密码。完全无人值守时，需要 root 或免密 sudo。
 

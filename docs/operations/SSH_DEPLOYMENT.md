@@ -57,11 +57,12 @@ INSTALL_PACKAGE="$PWD/dist/remote-exec-linux-x64.tar.gz" npm run test:deploy
 
 ## Rust 原型的慢速 SSH 路径
 
-Rust 原型的完整服务器包已在 xiaomi 实机验证为 `956,145` 字节。目标机无需 Node、OpenSSL、Cargo 或公网访问。最短安装路径由本机 `cat` 和免密 `ssh` 组成：
+Rust 原型的完整服务器包实测约 `0.96 MB`。Linux x86_64 实机验证确认目标机无需 Node、OpenSSL、Cargo 或公网访问。最短安装路径由本机 `cat` 和免密 `ssh` 组成：
 
 ```bash
-cat dist/rust-xiaomi/remote-exec-rust-prototype-linux-x64.tar.gz | \
-  ssh 63 'set -e; base="$HOME/remote-exec-rust-test"; rm -rf "$base"; mkdir -m 700 "$base"; mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; bash "$base/installed/run.sh"'
+TARGET_SSH=user@host
+PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-x64.tar.gz
+cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; exec bash "$base/installed/run.sh"'
 ```
 
 当前命令是单次传输，断线后需要重新传包。SSH 断点续传、远端完整性验收和自动 systemd unit 生成属于 Rust 正式部署流程的后续工作。

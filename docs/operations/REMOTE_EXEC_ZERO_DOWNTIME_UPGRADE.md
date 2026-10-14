@@ -13,7 +13,7 @@
 发布门禁是 [`test/upgrade/upgrade.js`](../../test/upgrade/upgrade.js)。它连续执行两轮真实 TLS 升级，验证在途操作、新连接、候选失败、rollback 和旧进程清理。任何一步失败都保持旧 generation active。
 
 
-目标设备只开放现有 remote-exec TLS/WSS 入口，设备可能没有 SSH、备用 TCP 端口或其他管理面。xiaomi 具备免密 SSH，只用于隔离实验和验证升级机制，不能作为目标设备正式升级或回滚的依赖。
+目标设备只开放现有 remote-exec TLS/WSS 入口，设备可能没有 SSH、备用 TCP 端口或其他管理面。具备免密 SSH 的实验机只用于隔离测试，不能作为目标设备正式升级或回滚的依赖。
 
 当前 daemon 直接监听业务端口，WebSocket、relay、上传下载和执行中的命令都属于当前进程。连接关闭会取消执行中的操作。当前代码也没有监听 socket 交接、连接迁移、drain 状态或 generation 管理，因此直接 `systemctl restart` 会造成连接中断。
 
@@ -123,9 +123,9 @@ daemon 必须跟踪：
 supervisor 通过 Unix socket 提供 `status`、`register`、`start`、`promote`、`drain`、`rollback` 和 `retire`。`register/start` 创建 candidate，不接收新连接；`promote` 先检查候选 `/readyz`，成功后才切换；切换后的旧 generation 保持 draining，直到回滚窗口关闭并且活动连接归零，发布流程显式调用 `retire` 回收它。
 
 
-## xiaomi 隔离验证
+## 隔离验证
 
-xiaomi 用于验证完整机制，不代表目标设备具备 SSH。测试环境使用独立目录、测试证书、测试 token hash、固定测试入口和两个回环 generation。另有独立的 Rust 离线安装验证，使用端口 `18791` 和用户级 systemd；该验证覆盖离线安装、重启与协议可用性，不属于本节的无中断升级门禁。
+实验机用于验证完整机制，不代表目标设备具备 SSH。测试环境使用独立目录、测试证书、测试 token hash、固定测试入口和两个回环 generation。
 
 ### 基线
 
@@ -135,7 +135,7 @@ xiaomi 用于验证完整机制，不代表目标设备具备 SSH。测试环境
 ssh -o BatchMode=yes \
   -o StrictHostKeyChecking=yes \
   -o ConnectTimeout=10 \
-  root@xiaomi 'hostname && id -un && node --version'
+  user@lab-host 'hostname && id -un && node --version'
 ```
 
 确认测试入口、端口 owner、进程管理方式、日志位置和回滚材料。禁止关闭主机密钥校验，禁止打印正式 token 和私钥。
@@ -200,7 +200,7 @@ ssh -o BatchMode=yes \
 NM105 稳定后，通过现有 relay 入口升级 nm108。链路为：
 
 ```text
-xiaomi 或 Pi -> NM105 现有入口 -> nm108 现有入口 -> nm108 generation
+实验机或 Pi -> NM105 现有入口 -> nm108 现有入口 -> nm108 generation
 ```
 
 NM105 保持不变，单独验证 nm108 新旧 generation 的连接排空和回滚。

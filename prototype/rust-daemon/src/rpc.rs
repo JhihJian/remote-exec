@@ -46,7 +46,7 @@ pub async fn send(out: &mpsc::Sender<Message>, value: Value) -> Result<(), RpcEr
     .map_err(|_| RpcError::new(-32000, "连接已关闭"))
 }
 
-pub async fn session<S>(ws: WebSocketStream<S>)
+pub async fn session<S>(ws: WebSocketStream<S>, relay_allow: Vec<String>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -115,7 +115,7 @@ where
         let result = tokio::select! {
             biased;
             _ = cancelled(&mut cancel) => break,
-            result = dispatch(&request, &params, &id, &out, &mut request_cancel) => result,
+            result = dispatch(&request, &params, &id, &out, &mut request_cancel, &relay_allow) => result,
         };
         let response = match result {
             Ok(result) => json!({"id": id, "result": result}),
@@ -135,12 +135,16 @@ async fn dispatch(
     id: &Value,
     out: &mpsc::Sender<Message>,
     cancel: &mut watch::Receiver<bool>,
+    relay_allow: &[String],
 ) -> Result<Value, RpcError> {
     let method = request
         .get("method")
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::new(-32600, "请求需要 method 字段"))?;
-    if !matches!(method, "exec" | "exec.stream" | "file.read" | "file.write") {
+    if !matches!(
+        method,
+        "exec" | "exec.stream" | "file.read" | "file.write" | "relay"
+    ) {
         return Err(RpcError::new(-32601, format!("未知方法: {method}")));
     }
     if !params.is_object() {
@@ -152,6 +156,7 @@ async fn dispatch(
         }
         "file.read" => crate::files::read(params).await,
         "file.write" => crate::files::write(params).await,
+        "relay" => crate::relay::request(params, id, out, cancel, relay_allow).await,
         _ => Err(RpcError::new(-32601, format!("未知方法: {method}"))),
     }
 }

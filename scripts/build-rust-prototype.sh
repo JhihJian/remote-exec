@@ -8,7 +8,7 @@ PORT=8791
 TARGET="${RUST_TARGET:-x86_64-unknown-linux-musl}"
 RUST_CC="${RUST_CC:-}"
 RUST_LINKER="${RUST_LINKER:-}"
-LIMIT=1000000
+LIMIT=2000000
 while (($#)); do
   case "$1" in
     --address|--port|--output-dir|--target|--cc|--linker)
@@ -96,11 +96,20 @@ for (const pkg of metadata.packages.filter(p => p.source).sort((a, b) => a.name.
 fs.writeFileSync(process.argv[3], sections.join('\n\n') + '\n');
 NODE
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -keyout "$STAGE/package/credentials/server.key" -out "$STAGE/package/credentials/server.crt" \
-  -subj '/CN=remote-exec-rust-prototype' -addext "subjectAltName=$SAN" >/dev/null 2>&1
+  -keyout "$STAGE/ca.key" -out "$STAGE/ca.crt" \
+  -subj '/CN=remote-exec-rust-prototype CA' \
+  -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' >/dev/null 2>&1
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout "$STAGE/package/credentials/server.key" -out "$STAGE/server.csr" \
+  -subj '/CN=remote-exec-rust-prototype' >/dev/null 2>&1
+printf 'basicConstraints=critical,CA:FALSE\nsubjectAltName=%s\n' "$SAN" > "$STAGE/server.ext"
+openssl x509 -req -days 365 -in "$STAGE/server.csr" \
+  -CA "$STAGE/ca.crt" -CAkey "$STAGE/ca.key" -CAcreateserial \
+  -out "$STAGE/package/credentials/server.crt" -extfile "$STAGE/server.ext" >/dev/null 2>&1
 openssl rand -hex 32 | tr -d '\n' > "$STAGE/access/token.txt"
 sha256sum "$STAGE/access/token.txt" | awk '{print $1}' > "$STAGE/package/credentials/token.sha256"
-cp "$STAGE/package/credentials/server.crt" "$STAGE/access/server.crt"
+cp "$STAGE/ca.crt" "$STAGE/access/server.crt"
 printf '%s\n' "$PORT" > "$STAGE/package/port"
 cp "$PROJECT_ROOT/prototype/packaging/README.txt" "$STAGE/package/README.txt"
 node - "$STAGE/package" "$STAGE/access" "$ADDRESS" "$PORT" "$TARGET" "$(rustc --version)" "$ARCH" <<'NODE'
@@ -109,8 +118,8 @@ const path = require('node:path');
 const [root, access, host, port, target, compiler, arch] = process.argv.slice(2);
 fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
   status: 'prototype', version: '0.1.0', target, compiler, arch, port: Number(port),
-  capabilities: ['exec', 'exec.stream', 'file.read', 'file.write', 'upload', 'download'],
-  notImplemented: ['relay', 'deploy.ssh', 'supervisor', 'resumable-ssh-deploy']
+  capabilities: ['exec', 'exec.stream', 'file.read', 'file.write', 'relay', 'upload', 'download'],
+  notImplemented: ['deploy.ssh', 'supervisor', 'resumable-ssh-deploy']
 }, null, 2) + '\n');
 fs.writeFileSync(path.join(access, 'hosts.json'), JSON.stringify({ hosts: { 'rust-prototype': {
   host, port: Number(port), ca: '/ABSOLUTE/PATH/access/server.crt', tokenFile: '/ABSOLUTE/PATH/access/token.txt'

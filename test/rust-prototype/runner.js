@@ -46,9 +46,35 @@ async function main() {
   const daemon = spawn(binary, ["--host", "0.0.0.0", "--port", "0", "--cert", cert,
     "--key", key, "--token-sha256-file", hashFile], { stdio: ["ignore", "pipe", "pipe"] });
   const exited = once(daemon, "exit");
+  const targetTmp = fs.mkdtempSync(path.join(os.tmpdir(), "remote-exec-rust-relay-target-"));
+  const targetCa = path.join(targetTmp, "ca.pem");
+  const targetCaKey = path.join(targetTmp, "ca.key");
+  const targetCert = path.join(targetTmp, "cert.pem");
+  const targetCsr = path.join(targetTmp, "cert.csr");
+  const targetExt = path.join(targetTmp, "cert.ext");
+  const targetKey = path.join(targetTmp, "key.pem");
+  const targetHash = path.join(targetTmp, "token.sha256");
+  const targetToken = crypto.randomBytes(32).toString("hex");
+  fs.writeFileSync(targetHash, sha(targetToken), { mode: 0o600 });
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+    "-keyout", targetCaKey, "-out", targetCa, "-subj", "/CN=localhost CA",
+    "-addext", "basicConstraints=critical,CA:TRUE",
+    "-addext", "keyUsage=critical,keyCertSign,cRLSign"], { stdio: "ignore" });
+  execFileSync("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", targetKey, "-out", targetCsr, "-subj", "/CN=localhost"], { stdio: "ignore" });
+  fs.writeFileSync(targetExt, "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n");
+  execFileSync("openssl", ["x509", "-req", "-days", "1", "-in", targetCsr,
+    "-CA", targetCa, "-CAkey", targetCaKey, "-CAcreateserial", "-out", targetCert,
+    "-extfile", targetExt], { stdio: "ignore" });
+  const targetDaemon = spawn(binary, ["--host", "127.0.0.1", "--port", "0", "--cert", targetCert,
+    "--key", targetKey, "--token-sha256-file", targetHash], { stdio: ["ignore", "pipe", "pipe"] });
+  const targetExited = once(targetDaemon, "exit");
   let log = "";
   daemon.stderr.on("data", (chunk) => { log += chunk; });
   daemon.on("error", (e) => { log += e.message; });
+  let targetLog = "";
+  targetDaemon.stderr.on("data", (chunk) => { targetLog += chunk; });
+  targetDaemon.on("error", (e) => { targetLog += e.message; });
   const clients = new Set();
   let passed = 0;
   async function test(name, fn) {
@@ -60,6 +86,9 @@ async function main() {
     await eventually(() => /listening 0\.0\.0\.0:(\d+)/.test(log) || daemon.exitCode !== null);
     const match = log.match(/listening 0\.0\.0\.0:(\d+)/);
     assert.ok(match, log);
+    await eventually(() => /listening 127\.0\.0\.1:(\d+)/.test(targetLog) || targetDaemon.exitCode !== null);
+    const targetMatch = targetLog.match(/listening 127\.0\.0\.1:(\d+)/);
+    assert.ok(targetMatch, targetLog);
     const options = { host: "127.0.0.1", port: Number(match[1]), ca: fs.readFileSync(cert), rejectUnauthorized: true };
     const auth = { Authorization: `Bearer ${token}` };
     function request(method, url, headers = {}, body) {
@@ -202,7 +231,40 @@ async function main() {
       await assert.rejects(c.call("file.read", { file: "relative" }), /-32602/);
       await assert.rejects(c.call("file.write", { file, contentB64: "%%%" }), /-32602/);
       await assert.rejects(c.call("file.read", { file: tmp }), /-32603/);
-      await assert.rejects(c.call("relay", {}), /-32601/);
+      await assert.rejects(c.call("relay", {}), /-32015/);
+    });
+    await test("relay 转发 Rust 目标的命令、流式输出和文件 RPC", async () => {
+      const target = { host: "127.0.0.1", port: Number(targetMatch[1]) };
+      const auth = { token: targetToken, ca: fs.readFileSync(targetCa, "utf8") };
+      const base = { target, auth };
+      let r = await c.call("relay", { ...base, request: { method: "exec", params: { command: "printf relay-rust" } } });
+      assert.equal(r.relayed, true);
+      assert.equal(r.error, null);
+      assert.equal(Buffer.from(r.result.stdoutB64, "base64").toString(), "relay-rust");
+      const events = [];
+      r = await c.callStream("relay", { ...base, request: { method: "exec.stream", params: { command: "printf first; printf second >&2" } } }, (event) => events.push(event));
+      assert.equal(r.relayed, true);
+      assert.equal(events.filter((event) => event.stream === "stdout").map((event) => Buffer.from(event.dataB64, "base64").toString()).join(""), "first");
+      assert.equal(events.filter((event) => event.stream === "stderr").map((event) => Buffer.from(event.dataB64, "base64").toString()).join(""), "second");
+      const targetFile = "/tmp/remote-exec-rust-relay-file";
+      const payload = Buffer.from("relay-file");
+      r = await c.call("relay", { ...base, request: { method: "file.write", params: { file: targetFile, contentB64: payload.toString("base64") } } });
+      assert.equal(r.result.size, payload.length);
+      r = await c.call("relay", { ...base, request: { method: "file.read", params: { file: targetFile } } });
+      assert.deepEqual(Buffer.from(r.result.contentB64, "base64"), payload);
+      await c.call("relay", { ...base, request: { method: "exec", params: { command: `rm -f ${shellQuote(targetFile)}` } } });
+      r = await c.call("relay", {
+        target: { host: "127.0.0.1", port: Number(match[1]) },
+        auth: { token, ca: fs.readFileSync(cert, "utf8") },
+        request: { method: "exec", params: { command: "printf relay-self-signed" } },
+      });
+      assert.equal(Buffer.from(r.result.stdoutB64, "base64").toString(), "relay-self-signed");
+    });
+    await test("relay 白名单和嵌套请求被拒绝", async () => {
+      const target = { host: "8.8.8.8", port: 8791 };
+      const auth = { token: targetToken, ca: fs.readFileSync(targetCa, "utf8") };
+      await assert.rejects(c.call("relay", { target, auth, request: { method: "exec", params: { command: "true" } } }), /-32010/);
+      await assert.rejects(c.call("relay", { target: { host: "127.0.0.1", port: Number(targetMatch[1]) }, auth, request: { method: "relay", params: {} } }), /-32015/);
     });
     await test("chunked 上传与下载保留 Content-Length 和哈希", async () => {
       const file = path.join(tmp, "chunked");
@@ -279,7 +341,9 @@ async function main() {
   } finally {
     for (const c of clients) c.abort();
     if (daemon.exitCode === null && daemon.signalCode === null) { daemon.kill("SIGTERM"); await exited; }
+    if (targetDaemon.exitCode === null && targetDaemon.signalCode === null) { targetDaemon.kill("SIGTERM"); await targetExited; }
     fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(targetTmp, { recursive: true, force: true });
   }
 }
 main().catch((e) => { console.error(e); process.exitCode = 1; });

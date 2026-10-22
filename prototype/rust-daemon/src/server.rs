@@ -126,7 +126,7 @@ async fn download(path: &std::path::Path) -> Result<Response<Body>, AnyError> {
         .body(StreamBody::new(stream).boxed_unsync())?)
 }
 
-pub async fn serve<S>(socket: S, hash: [u8; 32])
+pub async fn serve<S>(socket: S, hash: [u8; 32], relay_allow: Vec<String>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -239,6 +239,6 @@ where
             .max_frame_size(Some(files::MAX_PAYLOAD));
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(socket), Role::Server, Some(config))
             .await;
-        rpc::session(ws).await;
+        rpc::session(ws, relay_allow).await;
     }
 }

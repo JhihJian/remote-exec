@@ -41,7 +41,7 @@ jobs:
           cargo fmt --manifest-path prototype/rust-daemon/Cargo.toml -- --check
           cargo clippy --locked --manifest-path prototype/rust-daemon/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path prototype/rust-daemon/Cargo.toml
-      - name: 构建完整包并检查 1MB 门禁
+      - name: 构建完整包并检查 2MB 门禁
         run: bash scripts/build-rust-prototype.sh --address 127.0.0.1
       - name: 验证现有客户端和异常行为
         run: node test/rust-prototype/runner.js

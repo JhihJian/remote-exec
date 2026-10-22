@@ -7,7 +7,7 @@ PACKAGE="${RUST_PROTOTYPE_PACKAGE:-$ROOT/dist/rust-prototype/remote-exec-rust-pr
 IMAGE="${RUST_PROTOTYPE_OFFLINE_IMAGE:-debian:12-slim}"
 [[ -f "$PACKAGE" ]] || { printf '请先构建完整 Rust 原型包\n' >&2; exit 1; }
 BYTES="$(wc -c < "$PACKAGE")"
-((BYTES < 1000000)) || { printf '完整包超过 1MB：%s 字节\n' "$BYTES" >&2; exit 1; }
+((BYTES < 2000000)) || { printf '完整包超过 2MB：%s 字节\n' "$BYTES" >&2; exit 1; }
 (cd "$(dirname "$PACKAGE")" && sha256sum --check "$(basename "$PACKAGE").sha256")
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT

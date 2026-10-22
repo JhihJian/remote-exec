@@ -57,7 +57,7 @@ INSTALL_PACKAGE="$PWD/dist/remote-exec-linux-x64.tar.gz" npm run test:deploy
 
 ## Rust 原型的慢速 SSH 路径
 
-Rust 原型的完整服务器包支持 x86_64 和 ARM64，实测均小于 `1 MB`。目标机无需 Node、OpenSSL、Cargo 或公网访问。最短安装路径由本机 `cat` 和免密 `ssh` 组成：
+Rust 原型的完整服务器包支持 x86_64 和 ARM64，构建门禁为严格小于 `2 MB`。目标机无需 Node、OpenSSL、Cargo 或公网访问。最短安装路径由本机 `cat` 和免密 `ssh` 组成：
 
 ```bash
 TARGET_SSH=root@172.16.126.24

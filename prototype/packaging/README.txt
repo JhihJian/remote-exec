@@ -1,7 +1,7 @@
 remote-exec Rust 离线原型
 
-这是独立的验证包，支持 TLS/WSS、exec、exec.stream、file.read、file.write、HTTPS 上传和下载。
-Rust 服务自身不实现 relay、网关 SSH 部署、supervisor 无中断升级和弱网 SSH 断点续传；root 安装器已支持通过 systemd 常驻。
+这是独立的验证包，支持 TLS/WSS、exec、exec.stream、file.read、file.write、单跳 relay、HTTPS 上传和下载。
+Rust 服务自身支持受白名单限制的单跳 relay，但不实现网关 SSH 部署、supervisor 无中断升级和弱网 SSH 断点续传；root 安装器已支持通过 systemd 常驻。
 
 运行条件：Linux x86_64 或 ARM64（aarch64）、Bash、可写目录。安装脚本还使用常见的 coreutils。
 程序静态链接，不需要 Node、npm、Cargo、OpenSSL 或目标机访问公网。

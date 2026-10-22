@@ -188,12 +188,20 @@
     },
     {
       "id": "rust-offline-prototype-boundary",
-      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令与文件服务，使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 1MB 的完整服务器包；正式 Node daemon、relay、SSH 部署和 supervisor 继续独立维护。",
+      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包；正式 Node daemon、SSH 部署和 supervisor 继续独立维护。",
       "documentRole": "overview",
       "evidence": [
         {
           "path": "prototype/rust-daemon/src/main.rs",
           "locator": "mod server;"
+        },
+        {
+          "path": "prototype/rust-daemon/src/relay.rs",
+          "locator": "const DEFAULT_ALLOW: [&str; 4]"
+        },
+        {
+          "path": "prototype/rust-daemon/src/relay.rs",
+          "locator": "relay 仅支持 exec/exec.stream/file.read/file.write，禁止嵌套 relay"
         },
         {
           "path": "scripts/build-rust-prototype.sh",

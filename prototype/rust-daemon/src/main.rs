@@ -1,6 +1,7 @@
 mod auth;
 mod exec;
 mod files;
+mod relay;
 mod rpc;
 mod server;
 
@@ -16,6 +17,7 @@ struct Options {
     cert: String,
     key: String,
     hash: String,
+    relay_allow: Vec<String>,
 }
 
 fn options() -> Result<Option<Options>, AnyError> {
@@ -26,6 +28,7 @@ fn options() -> Result<Option<Options>, AnyError> {
         cert: String::new(),
         key: String::new(),
         hash: String::new(),
+        relay_allow: Vec::new(),
     };
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
@@ -36,7 +39,7 @@ fn options() -> Result<Option<Options>, AnyError> {
         }
         if !matches!(
             arg.as_str(),
-            "--host" | "--port" | "--cert" | "--key" | "--token-sha256-file"
+            "--host" | "--port" | "--cert" | "--key" | "--token-sha256-file" | "--relay-allow"
         ) {
             return Err(format!("未知参数: {arg}").into());
         }
@@ -47,6 +50,7 @@ fn options() -> Result<Option<Options>, AnyError> {
             "--cert" => opts.cert = value,
             "--key" => opts.key = value,
             "--token-sha256-file" => opts.hash = value,
+            "--relay-allow" => opts.relay_allow.push(value),
             _ => unreachable!(),
         }
     }
@@ -78,6 +82,7 @@ async fn main() -> Result<(), AnyError> {
         listener.local_addr()?
     );
     let permits = Arc::new(tokio::sync::Semaphore::new(64));
+    let relay_allow = opts.relay_allow;
     let mut tasks = tokio::task::JoinSet::new();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {
@@ -89,10 +94,11 @@ async fn main() -> Result<(), AnyError> {
                 let (socket, _) = accepted?;
                 let Ok(permit) = permits.clone().try_acquire_owned() else { continue; };
                 let acceptor = acceptor.clone();
+                let relay_allow = relay_allow.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
                     if let Ok(Ok(tls)) = tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
-                        server::serve(tls, hash).await;
+                        server::serve(tls, hash, relay_allow).await;
                     }
                 });
             }

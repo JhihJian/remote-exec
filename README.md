@@ -24,9 +24,9 @@ remote-exec 的主要能力之一，是在**单一外部端口**的设备上进�
 
 ## Rust 离线原型
 
-面向无法联网安装依赖、通过慢速 SSH 部署的 Linux x86_64 和 ARM64 设备，项目提供独立的 Rust musl 静态原型。服务器包包含 TLS 证书、私钥、token 哈希和安装启动材料，构建强制要求完整压缩包小于 1,000,000 字节。目标机使用已有 Bash 与常见系统工具完成离线安装。
+面向无法联网安装依赖、通过慢速 SSH 部署的 Linux x86_64 和 ARM64 设备，项目提供独立的 Rust musl 静态原型。服务器包包含 TLS 证书、私钥、token 哈希和安装启动材料，构建强制要求完整压缩包小于 2,000,000 字节。目标机使用已有 Bash 与常见系统工具完成离线安装。
 
-原型已覆盖 TLS/WSS、命令与流式输出、文件 RPC、HTTPS 上传下载，并提供现有 Node 客户端互操作和禁网安装验证。relay、网关 SSH 部署、无中断升级和弱网 SSH 续传属于后续迁移范围，正式 Node 服务继续独立维护。构建与安装方法见 [Rust 离线原型](docs/operations/RUST_OFFLINE_PROTOTYPE.md)。
+原型已覆盖 TLS/WSS、命令与流式输出、文件 RPC、HTTPS 上传下载和单跳 relay，并提供现有 Node 客户端互操作和禁网安装验证。网关 SSH 部署、无中断升级和弱网 SSH 续传属于后续迁移范围，正式 Node 服务继续独立维护。构建与安装方法见 [Rust 离线原型](docs/operations/RUST_OFFLINE_PROTOTYPE.md)。
 
 已在 Linux x86_64 实机验证免密 SSH 管道传输、无网络离线安装、TLS/WSS 命令与文件操作，以及用户级 systemd 重启。ARM64 包已在 openEuler 22.03 LTS-SP1 实机验证系统级 systemd 常驻和 relay 接入。目标机无需 Node、OpenSSL 或 Cargo。
 
@@ -361,7 +361,7 @@ cat "$OUTPUT_DIR/remote-exec-rust-prototype-linux-arm64.tar.gz" | \
   ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
 ```
 
-`--target` 支持 `x86_64-unknown-linux-musl` 和 `aarch64-unknown-linux-musl`，分别生成 x64 与 ARM64 包。root 目标使用 `--systemd` 后会启用 `remote-exec-rust-prototype.service`，包传输完成后目标机不执行 Node、Cargo、OpenSSL 或 npm。完整包构建时强制小于 `1,000,000` 字节；Rust 服务自身不实现 relay，但可被 NM105 的 Node relay 转发 `exec`、`exec.stream`、`file.read` 和 `file.write` 请求。
+`--target` 支持 `x86_64-unknown-linux-musl` 和 `aarch64-unknown-linux-musl`，分别生成 x64 与 ARM64 包。root 目标使用 `--systemd` 后会启用 `remote-exec-rust-prototype.service`，包传输完成后目标机不执行 Node、Cargo、OpenSSL 或 npm。完整包构建时强制小于 `2,000,000` 字节；Rust 服务自身支持受白名单限制的单跳 relay，可由 NM105 的 Node relay 或其他 Rust relay 转发 `exec`、`exec.stream`、`file.read` 和 `file.write` 请求。
 
 ## 单一外部端口无中断升级
 

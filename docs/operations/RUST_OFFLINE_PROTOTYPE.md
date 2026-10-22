@@ -8,13 +8,13 @@ Rust 原型用于验证小于 1MB 的离线部署包：Linux 目标机通过 SSH
 
 | 范围 | 当前状态 |
 | --- | --- |
-| Linux x86_64 musl 静态程序 | 已构建并验证 |
+| Linux x86_64 / ARM64 musl 静态程序 | 已支持，x86_64 已回归，ARM64 在 openEuler 22.03 LTS-SP1 实机验证 |
 | 完整部署压缩包严格小于 1,000,000 字节 | 构建脚本强制检查，包含服务器证书与私钥 |
 | 禁网、无 Node/npm/Cargo/OpenSSL 的环境 | 已验证普通用户离线安装和启动 |
 | TLS 鉴权、命令、文件协议与异常输入 | 持久化回归测试覆盖 |
 | relay、`deploy.ssh`、supervisor 排空与无中断升级 | 后续迁移范围，原型未知方法返回 `-32601` |
 | SSH 上传断点续传、自动登记主机、开机启动 | 后续部署流程范围 |
-| ARM、其他内核与额外目标设备 | 待取得设备事实后验证 |
+| 其他 CPU、内核与额外目标设备 | 待取得设备事实后验证 |
 
 ## 模块职责
 
@@ -28,20 +28,20 @@ RPC 的文件写入与 HTTPS 上传均先写同目录临时文件，再原子 re
 
 ## 构建与安装
 
-构建端需要 Rust 工具链、`x86_64-unknown-linux-musl` 标准库、musl-gcc、OpenSSL、Node 和常见归档工具。目标机需要 Linux x86_64、Bash、可写且可执行的目录。安装脚本使用 tar 解包之后的 coreutils，程序本身只依赖内核和系统 Bash。业务命令使用的程序仍由目标机提供。
+构建端需要 Rust 工具链、对应 target 标准库、目标架构的 musl linker、OpenSSL、Node 和常见归档工具。目标机需要 Linux x86_64 或 ARM64、Bash、可写且可执行的目录。安装脚本使用 tar 解包之后的 coreutils，程序本身只依赖内核和系统 Bash。openEuler 22.03 LTS-SP1 已验证，业务命令使用的程序仍由目标机提供。
 
 在项目根目录构建某一设备的专用包：
 
 ```bash
-rustup target add x86_64-unknown-linux-musl
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 bash scripts/build-rust-prototype.sh --address 192.0.2.10 --output-dir dist/rust-device
 ```
 
-`--address` 必须是客户端实际使用的 DNS 名或 IPv4，`--port` 默认 8791。构建脚本固定使用 musl target、锁文件和 release 配置，检查 ELF 的动态解释器和动态依赖，并对最终压缩包执行体积门禁。输出目录中已存在包或接入资料时停止，以保留既有凭据。
+`--address` 必须是客户端实际使用的 DNS 名或 IPv4，`--port` 默认 8791。`--target` 支持 `x86_64-unknown-linux-musl` 和 `aarch64-unknown-linux-musl`，分别生成 `linux-x64` 和 `linux-arm64` 包；可用 `--cc`、`--linker` 指定交叉工具链。构建脚本固定使用 musl target、锁文件和 release 配置，检查 ELF 的动态解释器和动态依赖，并对最终压缩包执行体积门禁。输出目录中已存在包或接入资料时停止，以保留既有凭据。
 
 输出包括：
 
-- `remote-exec-rust-prototype-linux-x64.tar.gz`：服务二进制、服务器证书、私钥、token 哈希、启动与安装脚本、清单、项目与依赖许可证。
+- `remote-exec-rust-prototype-linux-<arch>.tar.gz`：服务二进制、服务器证书、私钥、token 哈希、启动与安装脚本、systemd unit、target 清单、项目与依赖许可证。
 - 相邻 `.sha256` 文件：整个包的 SHA-256。
 - `access/`：只留在部署端的 token 明文、可信服务器证书和客户端主机配置模板。
 - `size.json`：完整归档与解压后二进制的字节数。
@@ -52,36 +52,38 @@ bash scripts/build-rust-prototype.sh --address 192.0.2.10 --output-dir dist/rust
 
 ```bash
 cd dist/rust-device
-sha256sum --check remote-exec-rust-prototype-linux-x64.tar.gz.sha256
-scp remote-exec-rust-prototype-linux-x64.tar.gz user@192.0.2.10:/PRIVATE/STAGING/
+sha256sum --check remote-exec-rust-prototype-linux-arm64.tar.gz.sha256
+scp remote-exec-rust-prototype-linux-arm64.tar.gz user@192.0.2.10:/PRIVATE/STAGING/
 ```
 
 目标机离线解包、安装并前台启动：
 
 ```bash
 cd /PRIVATE/STAGING
-tar -xzf remote-exec-rust-prototype-linux-x64.tar.gz
-bash install.sh /ABSOLUTE/PATH/remote-exec-rust-prototype
-bash /ABSOLUTE/PATH/remote-exec-rust-prototype/run.sh
+tar -xzf remote-exec-rust-prototype-linux-arm64.tar.gz
+bash install.sh --systemd /ABSOLUTE/PATH/remote-exec-rust-prototype
+systemctl status remote-exec-rust-prototype.service --no-pager
 ```
 
-安装器复制到独立的新目录，不修改正式服务。`run.sh` 监听 `0.0.0.0`，使用当前用户权限运行。前台退出即停止，原型只适合验证与独立试用。客户端修改 `access/hosts.json` 的 CA 和 token 路径，再合并到现有主机配置。TLS 连接必须信任指定证书并匹配证书 SAN。
+安装器复制到独立的新目录，不修改正式服务。`run.sh` 监听 `0.0.0.0`，使用当前用户权限运行。`--systemd` 仅允许 root，会安装并启用系统级 `remote-exec-rust-prototype.service`。目标架构由包内 target 清单与 `uname` 双重校验。客户端修改 `access/hosts.json` 的 CA 和 token 路径，再合并到现有客户端配置。TLS 连接必须信任指定证书并匹配证书 SAN。
 
 ### SSH 管道安装
 
-以下用户路径已在 Linux x86_64 实机验证。构建端使用目标地址生成专用包，包通过 SSH 标准输入传输，目标机自动解包并离线安装：
+以下路径已在 NM105 到 openEuler 22.03 LTS-SP1 ARM64 实机验证。构建端使用目标地址生成 ARM64 包，包通过 SSH 标准输入经 NM105 传输到目标机，目标机自动校验、解包并启用 systemd：
 
 ```bash
-TARGET_SSH=user@host
-TARGET_ADDRESS=192.0.2.10
+TARGET_SSH=root@172.16.126.24
+TARGET_ADDRESS=172.16.126.24
 TEST_PORT=18791
-OUTPUT_DIR=dist/rust-device
-bash scripts/build-rust-prototype.sh --address "$TARGET_ADDRESS" --port "$TEST_PORT" --output-dir "$OUTPUT_DIR"
-cat "$OUTPUT_DIR/remote-exec-rust-prototype-linux-x64.tar.gz" | \
-  ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; exec bash "$base/installed/run.sh"'
+OUTPUT_DIR=dist/rust-nm24
+bash scripts/build-rust-prototype.sh --address "$TARGET_ADDRESS" --port "$TEST_PORT" \
+  --target aarch64-unknown-linux-musl --cc <aarch64-musl-cc> --linker <aarch64-musl-linker> \
+  --output-dir "$OUTPUT_DIR"
+cat "$OUTPUT_DIR/remote-exec-rust-prototype-linux-arm64.tar.gz" | \
+  ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-rust.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
 ```
 
-该命令使用免密 SSH，不依赖专用文件上传工具或目标机公网访问。`TEST_PORT` 应选择目标机上未占用的端口。常驻运行需要额外提供目标侧进程管理器 unit；Linux 实机验证覆盖用户级 systemd 的启用、重启、停止启动和服务恢复。
+该命令使用免密 SSH，不依赖目标机公网访问；目标只执行 Bash、tar 和 systemd。`--systemd` 会安装并启用 `remote-exec-rust-prototype.service`，服务监听 `0.0.0.0:18791`。NM105 的当前 Node daemon 以 `172.16.126.0/24` 为 relay 白名单，使用目标包 `access/` 中的证书和 token 后，可转发 `exec`、`exec.stream`、`file.read` 和 `file.write`。SSH 断点续传仍属于后续部署流程。
 
 ## 验证与测量
 
@@ -99,9 +101,9 @@ bash test/rust-prototype/offline.sh
 
 ### 实测结果
 
-使用 Rust 1.97.1、`x86_64-unknown-linux-musl`、锁文件和 release 配置，包含许可证及设备凭据的最终服务器包为 **956,142 字节**，解压后的服务二进制为 **1,799,024 字节**。完整包相对 1,000,000 字节上限剩余 43,858 字节。随机凭据与编译器会影响后续构建大小，以每次完整资产测量为准。
+使用 Rust 1.97.1、锁文件和 release 配置，x86_64 包为 **956,845 字节**、二进制为 **1,799,008 字节**；ARM64 包为 **894,854 字节**、二进制为 **1,480,752 字节**。两个完整包均严格小于 1,000,000 字节，随机凭据与编译器会影响后续构建大小，以每次完整资产测量为准。
 
-16 项外部协议与异常行为检查、2 项 Rust 单元测试、格式和 Clippy 检查、静态链接检查与禁网离线安装启动均已通过。100MB 上传下载的大小与 SHA-256 一致。Linux x86_64 实机完成 TLS/WSS、命令、流式输出、文件 RPC、HTTPS 上传下载和 systemd 重启验证。ARM、其他内核和额外目标设备仍需验证。
+16 项外部协议与异常行为检查、2 项 Rust 单元测试、格式和 Clippy 检查、两种架构静态链接检查与禁网离线安装启动均已通过。100MB 上传下载的大小与 SHA-256 一致。Linux x86_64 实机完成 TLS/WSS、命令、流式输出、文件 RPC、HTTPS 上传下载和 systemd 重启验证；ARM64 openEuler 22.03 LTS-SP1 实机完成 systemd 安装、服务重启、TLS/WSS 和经 NM105 relay 的命令执行验证。
 
 客户端 token 保留在本机，服务器包只携带哈希。
 

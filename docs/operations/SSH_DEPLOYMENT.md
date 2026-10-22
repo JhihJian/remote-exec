@@ -57,12 +57,12 @@ INSTALL_PACKAGE="$PWD/dist/remote-exec-linux-x64.tar.gz" npm run test:deploy
 
 ## Rust 原型的慢速 SSH 路径
 
-Rust 原型的完整服务器包实测约 `0.96 MB`。Linux x86_64 实机验证确认目标机无需 Node、OpenSSL、Cargo 或公网访问。最短安装路径由本机 `cat` 和免密 `ssh` 组成：
+Rust 原型的完整服务器包支持 x86_64 和 ARM64，实测均小于 `1 MB`。目标机无需 Node、OpenSSL、Cargo 或公网访问。最短安装路径由本机 `cat` 和免密 `ssh` 组成：
 
 ```bash
-TARGET_SSH=user@host
-PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-x64.tar.gz
-cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; exec bash "$base/installed/run.sh"'
+TARGET_SSH=root@172.16.126.24
+PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-arm64.tar.gz
+cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-rust.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
 ```
 
-当前命令是单次传输，断线后需要重新传包。SSH 断点续传、远端完整性验收和自动 systemd unit 生成属于 Rust 正式部署流程的后续工作。
+当前命令是单次传输，断线后需要重新传包。Rust 包现已支持 x86_64 与 ARM64，并可由 root 安装器生成 systemd unit；SSH 断点续传、远端完整性验收仍属于后续部署流程。

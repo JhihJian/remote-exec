@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PACKAGE="${RUST_PROTOTYPE_PACKAGE:-$ROOT/dist/rust-prototype/remote-exec-rust-prototype-linux-x64.tar.gz}"
+ARCH="${RUST_PROTOTYPE_ARCH:-x64}"
+TARGET="${RUST_PROTOTYPE_TARGET:-x86_64-unknown-linux-musl}"
+PACKAGE="${RUST_PROTOTYPE_PACKAGE:-$ROOT/dist/rust-prototype/remote-exec-rust-prototype-linux-${ARCH}.tar.gz}"
 IMAGE="${RUST_PROTOTYPE_OFFLINE_IMAGE:-debian:12-slim}"
 [[ -f "$PACKAGE" ]] || { printf '请先构建完整 Rust 原型包\n' >&2; exit 1; }
 BYTES="$(wc -c < "$PACKAGE")"
@@ -11,6 +13,8 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 tar -xzf "$PACKAGE" -C "$STAGE"
 [[ ! -f "$STAGE/credentials/token.txt" ]] || { printf '服务包不应包含客户端 token 明文\n' >&2; exit 1; }
+[[ "$(cat "$STAGE/target")" == "$TARGET" ]] || { printf '包 target 清单错误\n' >&2; exit 1; }
+[[ -f "$STAGE/remote-exec-rust.service" ]] || { printf '包缺少 systemd unit\n' >&2; exit 1; }
 if readelf -l "$STAGE/remote-exec-rust-prototype" | grep -q INTERP || readelf -d "$STAGE/remote-exec-rust-prototype" | grep -q NEEDED; then
   printf '产物不是完全静态链接\n' >&2; exit 1
 fi

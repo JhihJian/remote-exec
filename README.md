@@ -24,11 +24,11 @@ remote-exec 的主要能力之一，是在**单一外部端口**的设备上进�
 
 ## Rust 离线原型
 
-面向无法联网安装依赖、通过慢速 SSH 部署的 Linux x86_64 设备，项目提供独立的 Rust musl 静态原型。服务器包包含 TLS 证书、私钥、token 哈希和安装启动材料，构建强制要求完整压缩包小于 1,000,000 字节。目标机使用已有 Bash 与常见系统工具完成离线安装。
+面向无法联网安装依赖、通过慢速 SSH 部署的 Linux x86_64 和 ARM64 设备，项目提供独立的 Rust musl 静态原型。服务器包包含 TLS 证书、私钥、token 哈希和安装启动材料，构建强制要求完整压缩包小于 1,000,000 字节。目标机使用已有 Bash 与常见系统工具完成离线安装。
 
 原型已覆盖 TLS/WSS、命令与流式输出、文件 RPC、HTTPS 上传下载，并提供现有 Node 客户端互操作和禁网安装验证。relay、网关 SSH 部署、无中断升级和弱网 SSH 续传属于后续迁移范围，正式 Node 服务继续独立维护。构建与安装方法见 [Rust 离线原型](docs/operations/RUST_OFFLINE_PROTOTYPE.md)。
 
-已在 Linux x86_64 实机验证免密 SSH 管道传输、无网络离线安装、TLS/WSS 命令与文件操作，以及用户级 systemd 重启。目标机无需 Node、OpenSSL 或 Cargo。
+已在 Linux x86_64 实机验证免密 SSH 管道传输、无网络离线安装、TLS/WSS 命令与文件操作，以及用户级 systemd 重启。ARM64 包已在 openEuler 22.03 LTS-SP1 实机验证系统级 systemd 常驻和 relay 接入。目标机无需 Node、OpenSSL 或 Cargo。
 
 ## 安全边界
 
@@ -348,19 +348,20 @@ rex deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.1
 
 ### Rust 原型一行 SSH 安装
 
-Rust 原型当前使用独立安装入口，不会修改现有 Node daemon，也不会自动创建 systemd unit。适合目标机无公网、无 Node 且需要先验证小包部署的场景。构建端按目标地址生成包后，可通过免密 SSH 标准输入传输并在目标机离线安装：
+Rust 原型当前使用独立安装入口，不会修改现有 Node daemon。适合目标机无公网、无 Node 且需要先验证小包部署的场景。构建端按目标地址和 target 生成包后，可通过免密 SSH 标准输入传输并在目标机离线安装：
 
 ```bash
 TARGET_SSH=user@host
 TARGET_ADDRESS=192.0.2.10
 TEST_PORT=18791
 OUTPUT_DIR=dist/rust-device
-bash scripts/build-rust-prototype.sh --address "$TARGET_ADDRESS" --port "$TEST_PORT" --output-dir "$OUTPUT_DIR"
-cat "$OUTPUT_DIR/remote-exec-rust-prototype-linux-x64.tar.gz" | \
-  ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; exec bash "$base/installed/run.sh"'
+bash scripts/build-rust-prototype.sh --address "$TARGET_ADDRESS" --port "$TEST_PORT" \
+  --target aarch64-unknown-linux-musl --output-dir "$OUTPUT_DIR"
+cat "$OUTPUT_DIR/remote-exec-rust-prototype-linux-arm64.tar.gz" | \
+  ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
 ```
 
-上面的命令以前台方式启动服务，常驻运行应由目标机的 systemd、OpenRC 或其他进程管理器托管。包传输完成后目标机不执行 Node、Cargo、OpenSSL 或 npm。当前 Rust 原型支持 Linux x86_64，完整包构建时强制小于 `1,000,000` 字节；relay、网关 SSH 部署、无中断升级和 SSH 断点续传仍沿用 Node 正式路径，尚未迁移。
+`--target` 支持 `x86_64-unknown-linux-musl` 和 `aarch64-unknown-linux-musl`，分别生成 x64 与 ARM64 包。root 目标使用 `--systemd` 后会启用 `remote-exec-rust-prototype.service`，包传输完成后目标机不执行 Node、Cargo、OpenSSL 或 npm。完整包构建时强制小于 `1,000,000` 字节；Rust 服务自身不实现 relay，但可被 NM105 的 Node relay 转发 `exec`、`exec.stream`、`file.read` 和 `file.write` 请求。
 
 ## 单一外部端口无中断升级
 

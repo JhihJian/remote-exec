@@ -14,8 +14,9 @@ const { pipeline } = require("node:stream/promises");
 const { WssClient } = require("../../src/client/websocket.js");
 
 const root = path.resolve(__dirname, "../..");
+const target = process.env.RUST_PROTOTYPE_TARGET || "x86_64-unknown-linux-musl";
 const binary = path.resolve(process.env.RUST_PROTOTYPE_BINARY || path.join(root,
-  "prototype/rust-daemon/target/x86_64-unknown-linux-musl/release/remote-exec-rust-prototype"));
+  `prototype/rust-daemon/target/${target}/release/remote-exec-rust-prototype`));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function eventually(fn, timeout = 5000) {
   const deadline = Date.now() + timeout;

@@ -6,7 +6,7 @@
 
 首次安装直接运行 daemon。现有 supervisor 和无中断升级机制保持独立，首次安装无需引入多版本管理和切换事务。
 
-状态：已实现首版，安装脚本、自包含发布包和 systemd unit 已纳入代码。支持范围与验证结果以 README 和测试为准。项目同时提供 Rust 离线原型，面向无公网、无 Node 的 Linux x86_64 设备；Rust 原型与本页 Node/systemd 安装器是两条独立路径。
+状态：已实现首版，安装脚本、自包含发布包和 systemd unit 已纳入代码。支持范围与验证结果以 README 和测试为准。项目同时提供 Rust 离线原型，面向无公网、无 Node 的 Linux x86_64 和 ARM64 设备；Rust 原型与本页 Node/systemd 安装器是两条独立路径。
 
 ## 用户怎么安装
 
@@ -25,12 +25,12 @@ curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/inst
 Rust 离线原型使用部署端准备好的完整静态包，通过 SSH 标准输入传输到目标机：
 
 ```bash
-TARGET_SSH=user@host
-PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-x64.tar.gz
-cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" "$base/installed"; exec bash "$base/installed/run.sh"'
+TARGET_SSH=root@host
+PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-arm64.tar.gz
+cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-rust.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
 ```
 
-该路径已在 Linux x86_64 实机验证。完整包约 `0.96 MB`，目标机不需要 Node、OpenSSL、Cargo 或公网访问。Rust 原型安装脚本复制到独立目录并前台启动，systemd unit 需要单独配置；Node 正式安装器仍负责 root/systemd、自包含 Node 运行时和正式发布验收。
+该路径已在 Linux x86_64 实机验证，并在 openEuler ARM64 实机验证。完整包保持小于 `1 MB`，目标机不需要 Node、OpenSSL、Cargo 或公网访问。Rust 原型 root 安装脚本可生成并启用独立 systemd unit；Node 正式安装器仍负责自包含 Node 运行时和正式发布验收。
 
 普通用户可能需要输入 sudo 密码。完全无人值守时，需要 root 或免密 sudo。
 

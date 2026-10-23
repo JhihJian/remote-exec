@@ -2,6 +2,7 @@ use crate::relay;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    ffi::CString,
     io,
     net::IpAddr,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -60,6 +61,108 @@ static NEXT_STATE_TEMP: AtomicU64 = AtomicU64::new(0);
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+/// supervisor 以 root 运行时，daemon generation 应降权到的服务用户身份。
+#[derive(Clone, Debug)]
+struct RunIdentity {
+    uid: u32,
+    gid: u32,
+    name: CString,
+}
+
+fn resolve_user(name: &str) -> io::Result<RunIdentity> {
+    let cname = CString::new(name).map_err(|_| invalid("--run-user 含非法字符"))?;
+    let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let mut buffer = vec![0u8; 1024];
+    loop {
+        let code = unsafe {
+            libc::getpwnam_r(
+                cname.as_ptr(),
+                &mut passwd,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if code == 0 {
+            break;
+        }
+        if code == libc::ERANGE {
+            buffer.resize(buffer.len() * 2, 0);
+            continue;
+        }
+        return Err(io::Error::from_raw_os_error(code));
+    }
+    if result.is_null() {
+        return Err(invalid(format!("--run-user 用户不存在: {name}")));
+    }
+    Ok(RunIdentity {
+        uid: passwd.pw_uid,
+        gid: passwd.pw_gid,
+        name: cname,
+    })
+}
+
+fn setpgid_self() -> io::Result<()> {
+    if unsafe { libc::setpgid(0, 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn drop_privileges(identity: &RunIdentity) -> io::Result<()> {
+    // 顺序：先建立独立进程组，再以 root 身份初始化补充组并降权。
+    setpgid_self()?;
+    if unsafe { libc::initgroups(identity.name.as_ptr(), identity.gid) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::setgid(identity.gid) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::setuid(identity.uid) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn spawn_managed(
+    launch: &Launch,
+    run_user: Option<&RunIdentity>,
+) -> io::Result<tokio::process::Child> {
+    let program = launch
+        .command
+        .first()
+        .map(String::as_str)
+        .ok_or_else(|| invalid("command 不能为空"))?;
+    let mut child = Command::new(program);
+    for argument in launch.command.iter().skip(1) {
+        child.arg(argument);
+    }
+    if let Some(cwd) = &launch.cwd {
+        child.current_dir(cwd);
+    }
+    for (key, value) in &launch.env {
+        child.env(key, value);
+    }
+    let identity = run_user.cloned();
+    unsafe {
+        child.pre_exec(move || {
+            if let Some(identity) = identity.as_ref() {
+                drop_privileges(identity)?;
+            } else {
+                setpgid_self()?;
+            }
+            Ok(())
+        });
+    }
+    child.spawn().map_err(|error| {
+        invalid(format!(
+            "拉起 {} 失败: {error}",
+            launch.command.first().map(String::as_str).unwrap_or("命令")
+        ))
+    })
 }
 
 fn exact_object<'a>(
@@ -551,10 +654,46 @@ async fn register(
     Ok(status(&state))
 }
 
+async fn watch_child(
+    state: SharedState,
+    state_path: Option<PathBuf>,
+    name: String,
+    mut process: tokio::process::Child,
+    shutting_down: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let _ = process.wait().await;
+    let mut state = state.lock().await;
+    // supervisor 主动退出时终止子进程属于预期行为，不得据此清空 active。
+    if shutting_down.load(std::sync::atomic::Ordering::Acquire) {
+        if let Some(generation) = state.generations.get_mut(&name) {
+            generation.pid = None;
+        }
+        return;
+    }
+    let was_active = state.active.as_deref() == Some(&name);
+    if let Some(generation) = state.generations.get_mut(&name) {
+        generation.pid = None;
+        if generation.state == "candidate" {
+            generation.start_error = Some("候选进程已退出".into());
+        }
+        if was_active {
+            generation.state = "draining".into();
+        }
+    }
+    if was_active {
+        state.active = None;
+    }
+    if was_active && let Err(error) = persist_state(&state, state_path.as_deref()).await {
+        eprintln!("持久化 supervisor state 失败: {error}");
+    }
+}
+
 async fn start(
     state: &SharedState,
     request: &Value,
     state_path: Option<&Path>,
+    run_user: Option<&RunIdentity>,
+    shutting_down: &Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Value, String> {
     let name = request
         .get("generation")
@@ -572,8 +711,7 @@ async fn start(
     let command = request
         .get("command")
         .and_then(Value::as_array)
-        .ok_or("start 需要 command 数组")?;
-    let command = command
+        .ok_or("start 需要 command 数组")?
         .iter()
         .map(|argument| {
             argument
@@ -582,10 +720,9 @@ async fn start(
                 .ok_or("command 参数必须是字符串")
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let program = command
-        .first()
-        .map(String::as_str)
-        .ok_or("command 不能为空")?;
+    if command.is_empty() {
+        return Err("command 不能为空".into());
+    }
     let cwd = request
         .get("cwd")
         .and_then(Value::as_str)
@@ -601,27 +738,9 @@ async fn start(
                 .collect()
         })
         .unwrap_or_default();
-    let mut child = Command::new(program);
-    for argument in command.iter().skip(1) {
-        child.arg(argument);
-    }
-    if let Some(cwd) = &cwd {
-        child.current_dir(cwd);
-    }
-    for (key, value) in &env {
-        child.env(key, value);
-    }
-    unsafe {
-        child.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut process = child.spawn().map_err(|error| error.to_string())?;
-    let pid = process.id().ok_or("无法取得候选进程 PID")?;
     let launch = Launch { command, cwd, env };
+    let mut process = spawn_managed(&launch, run_user).map_err(|error| error.to_string())?;
+    let pid = process.id().ok_or("无法取得候选进程 PID")?;
     let persist_error = {
         let mut state = state.lock().await;
         state.generations.insert(
@@ -649,29 +768,13 @@ async fn start(
         state.generations.remove(&name);
         return Err(format!("持久化 state 失败: {message}"));
     }
-    let monitor_state = state.clone();
-    let monitor_state_path = state_path.map(Path::to_path_buf);
-    tokio::spawn(async move {
-        let _ = process.wait().await;
-        let mut state = monitor_state.lock().await;
-        let was_active = state.active.as_deref() == Some(&name);
-        if let Some(generation) = state.generations.get_mut(&name) {
-            generation.pid = None;
-            if generation.state == "candidate" {
-                generation.start_error = Some("候选进程已退出".into());
-            }
-            if was_active {
-                generation.state = "draining".into();
-            }
-        }
-        if was_active {
-            state.active = None;
-        }
-        if was_active && let Err(error) = persist_state(&state, monitor_state_path.as_deref()).await
-        {
-            eprintln!("持久化 supervisor state 失败: {error}");
-        }
-    });
+    tokio::spawn(watch_child(
+        state.clone(),
+        state_path.map(Path::to_path_buf),
+        name.clone(),
+        process,
+        shutting_down.clone(),
+    ));
     let state = state.lock().await;
     Ok(status(&state))
 }
@@ -915,7 +1018,15 @@ async fn handle_control(
     state: SharedState,
     queue: Arc<Mutex<()>>,
     state_path: Option<PathBuf>,
+    expected_uid: u32,
+    run_user: Option<Arc<RunIdentity>>,
+    shutting_down: Arc<std::sync::atomic::AtomicBool>,
 ) -> io::Result<()> {
+    // 控制面仅限与 supervisor 同 uid 的调用方（生产中即 root）。
+    let cred = socket.peer_cred()?;
+    if cred.uid() != expected_uid {
+        return Err(invalid(format!("控制面拒绝 uid {} 的调用方", cred.uid())));
+    }
     let (reader, writer) = socket.into_split();
     let mut lines = tokio::io::BufReader::new(reader).lines();
     let Some(line) = lines.next_line().await? else {
@@ -932,7 +1043,16 @@ async fn handle_control(
             Ok(status(&state))
         }
         "register" => register(&state, &request, state_path.as_deref()).await,
-        "start" => start(&state, &request, state_path.as_deref()).await,
+        "start" => {
+            start(
+                &state,
+                &request,
+                state_path.as_deref(),
+                run_user.as_deref(),
+                &shutting_down,
+            )
+            .await
+        }
         "promote" => promote(&state, &request, state_path.as_deref()).await,
         "drain" => drain(&state, &request, state_path.as_deref()).await,
         "rollback" => rollback(&state, state_path.as_deref()).await,
@@ -942,6 +1062,77 @@ async fn handle_control(
     respond(writer, result).await
 }
 
+/// supervisor 重启后恢复：托管 candidate/draining 已随上次退出终止，直接清理；
+/// active managed 重新拉起；external 只恢复路由记录，不接管进程。
+async fn recover_generations(
+    state: &SharedState,
+    state_path: Option<&Path>,
+    run_user: Option<&RunIdentity>,
+    shutting_down: &Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), crate::AnyError> {
+    let mut respawn: Vec<(String, Launch)> = Vec::new();
+    {
+        let mut state = state.lock().await;
+        let doomed: Vec<String> = state
+            .generations
+            .iter()
+            .filter(|(_, generation)| generation.managed && generation.state != "active")
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in &doomed {
+            state.generations.remove(name);
+            for generation in state.generations.values_mut() {
+                if generation.previous.as_deref() == Some(name.as_str()) {
+                    generation.previous = None;
+                }
+            }
+        }
+        for (name, generation) in state.generations.iter() {
+            if generation.managed
+                && generation.state == "active"
+                && let Some(launch) = generation.launch.clone()
+            {
+                respawn.push((name.clone(), launch));
+            }
+        }
+        if !doomed.is_empty()
+            && let Err(error) = persist_state(&state, state_path).await
+        {
+            return Err(format!("恢复时持久化 state 失败: {error}").into());
+        }
+    }
+    for (name, launch) in respawn {
+        let mut guard = state.lock().await;
+        let Some(generation) = guard.generations.get_mut(&name) else {
+            continue;
+        };
+        match spawn_managed(&launch, run_user) {
+            Ok(process) => {
+                let pid = process.id();
+                generation.pid = pid;
+                generation.start_error = None;
+                eprintln!("supervisor 恢复拉起 {name} (pid {:?})", pid);
+                tokio::spawn(watch_child(
+                    state.clone(),
+                    state_path.map(Path::to_path_buf),
+                    name.clone(),
+                    process,
+                    shutting_down.clone(),
+                ));
+            }
+            Err(error) => {
+                generation.pid = None;
+                generation.start_error = Some(format!("重启恢复拉起失败: {error}"));
+                eprintln!("supervisor 恢复拉起 {name} 失败: {error}");
+            }
+        }
+        if let Err(error) = persist_state(&guard, state_path).await {
+            return Err(format!("恢复时持久化 state 失败: {error}").into());
+        }
+    }
+    Ok(())
+}
+
 pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     let mut host = "127.0.0.1".to_owned();
     let mut port = None;
@@ -949,6 +1140,7 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     let mut state_path = None;
     let mut old_host = None;
     let mut old_port = None;
+    let mut run_user = None;
     let mut index = 0;
     while index < args.len() {
         let value = args.get(index + 1).ok_or("supervisor 参数缺少值")?;
@@ -959,6 +1151,7 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
             "--state" => state_path = Some(PathBuf::from(value)),
             "--old-host" => old_host = Some(value.clone()),
             "--old-port" => old_port = Some(value.parse::<u16>()?),
+            "--run-user" => run_user = Some(value.clone()),
             _ => return Err(format!("未知 supervisor 参数: {}", args[index]).into()),
         }
         index += 2;
@@ -968,8 +1161,13 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
         .ok_or("supervisor 必须提供 1-65535 的 --port")?;
     let control_path = control_path.ok_or("supervisor 必须提供 --control")?;
     let state_path = state_path;
+    let run_user = match run_user.as_deref() {
+        Some(name) => Some(Arc::new(resolve_user(name)?)),
+        None => None,
+    };
     let loaded_state = load_state(state_path.as_deref()).await?;
     let state = Arc::new(Mutex::new(loaded_state));
+    let shutting_down = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut state_changed = false;
     match (old_host, old_port) {
         (Some(host), Some(port)) => {
@@ -1004,6 +1202,13 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
         let state = state.lock().await;
         persist_state(&state, state_path.as_deref()).await?;
     }
+    recover_generations(
+        &state,
+        state_path.as_deref(),
+        run_user.as_deref(),
+        &shutting_down,
+    )
+    .await?;
     if control_path.exists() {
         tokio::fs::remove_file(&control_path).await?;
     }
@@ -1015,6 +1220,9 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     let control_state = state.clone();
     let control_queue = Arc::new(Mutex::new(()));
     let control_state_path = state_path.clone();
+    let control_run_user = run_user.clone();
+    let control_shutting_down = shutting_down.clone();
+    let expected_uid = unsafe { libc::getuid() };
     let control_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -1026,6 +1234,9 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
                         control_state.clone(),
                         control_queue.clone(),
                         control_state_path.clone(),
+                        expected_uid,
+                        control_run_user.clone(),
+                        control_shutting_down.clone(),
                     ));
                 }
             }
@@ -1045,18 +1256,28 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
         }
     }
     let _ = shutdown_tx.send(true);
+    shutting_down.store(true, std::sync::atomic::Ordering::Release);
     control_task.abort();
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
-    let state = state.lock().await;
-    for generation in state.generations.values() {
-        if generation.managed
-            && let Some(pid) = generation.pid
-        {
-            let _ = signal_process_group(pid, libc::SIGTERM);
+    let doomed: Vec<u32> = {
+        let state = state.lock().await;
+        state
+            .generations
+            .values()
+            .filter(|generation| generation.managed)
+            .filter_map(|generation| generation.pid)
+            .collect()
+    };
+    let mut terminations = tokio::task::JoinSet::new();
+    for pid in doomed {
+        terminations.spawn(async move { terminate_managed(pid).await });
+    }
+    while let Some(result) = terminations.join_next().await {
+        if let Err(error) = result.unwrap_or_else(|error| Err(invalid(error.to_string()))) {
+            eprintln!("supervisor 退出时托管进程回收失败: {error}");
         }
     }
-    drop(state);
     let _ = tokio::fs::remove_file(control_path).await;
     Ok(())
 }

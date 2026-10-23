@@ -79,9 +79,14 @@ class WssClient {
         continue;
       }
       this.pending.delete(msg.id);
-      msg.error
-        ? pending.reject(new Error(`rpc ${msg.error.code}: ${msg.error.message}`))
-        : pending.resolve(msg.result);
+      if (msg.error) {
+        const error = new Error(`rpc ${msg.error.code}: ${msg.error.message}`);
+        error.code = msg.error.code;
+        if (msg.error.data !== undefined) error.data = msg.error.data;
+        pending.reject(error);
+      } else {
+        pending.resolve(msg.result);
+      }
     }
   }
 

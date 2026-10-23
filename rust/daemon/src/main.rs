@@ -1,6 +1,7 @@
 mod auth;
 mod exec;
 mod files;
+mod lifecycle;
 mod relay;
 mod rpc;
 mod server;
@@ -19,6 +20,7 @@ struct Options {
     key: String,
     hash: String,
     relay_allow: Vec<String>,
+    drain_timeout_ms: u64,
 }
 
 fn options(args: &[String]) -> Result<Option<Options>, AnyError> {
@@ -30,6 +32,7 @@ fn options(args: &[String]) -> Result<Option<Options>, AnyError> {
         key: String::new(),
         hash: String::new(),
         relay_allow: Vec::new(),
+        drain_timeout_ms: lifecycle::DEFAULT_DRAIN_TIMEOUT_MS,
     };
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
@@ -38,13 +41,19 @@ fn options(args: &[String]) -> Result<Option<Options>, AnyError> {
 子命令:\n\
   daemon      运行 daemon（默认，可省略）\n\
   supervisor  运行固定入口 supervisor\n\
-daemon 参数: --host <host> --port <port> --cert <pem> --key <pem> --token-sha256-file <file> [--relay-allow <cidr>]..."
+daemon 参数: --host <host> --port <port> --cert <pem> --key <pem> --token-sha256-file <file> [--relay-allow <cidr>] [--drain-timeout-ms <ms>]"
             );
             return Ok(None);
         }
         if !matches!(
             arg,
-            "--host" | "--port" | "--cert" | "--key" | "--token-sha256-file" | "--relay-allow"
+            "--host"
+                | "--port"
+                | "--cert"
+                | "--key"
+                | "--token-sha256-file"
+                | "--relay-allow"
+                | "--drain-timeout-ms"
         ) {
             return Err(format!("未知参数: {arg}").into());
         }
@@ -56,6 +65,7 @@ daemon 参数: --host <host> --port <port> --cert <pem> --key <pem> --token-sha2
             "--key" => opts.key = value.into(),
             "--token-sha256-file" => opts.hash = value.into(),
             "--relay-allow" => opts.relay_allow.push(value.into()),
+            "--drain-timeout-ms" => opts.drain_timeout_ms = value.parse()?,
             _ => unreachable!(),
         }
     }
@@ -99,31 +109,55 @@ async fn main() -> Result<(), AnyError> {
         "remote-execd listening {} (TLS only)",
         listener.local_addr()?
     );
+    let lifecycle = lifecycle::Lifecycle::new(opts.drain_timeout_ms);
+    lifecycle.mark_ready();
     let permits = Arc::new(tokio::sync::Semaphore::new(64));
     let relay_allow = opts.relay_allow;
     let mut tasks = tokio::task::JoinSet::new();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    // SIGTERM/SIGINT 进入排空：不再接受新请求，既有请求完成或超时后退出。
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut shutdown_tx = Some(shutdown_tx);
+    let mut shutdown = std::pin::pin!(shutdown_rx);
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
-            _ = term.recv() => break,
+            _ = tokio::signal::ctrl_c(), if shutdown_tx.is_some() => {
+                begin_shutdown(&lifecycle, shutdown_tx.take());
+            }
+            _ = term.recv(), if shutdown_tx.is_some() => {
+                begin_shutdown(&lifecycle, shutdown_tx.take());
+            }
+            _ = &mut shutdown => break,
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
             accepted = listener.accept() => {
                 let (socket, _) = accepted?;
                 let Ok(permit) = permits.clone().try_acquire_owned() else { continue; };
                 let acceptor = acceptor.clone();
                 let relay_allow = relay_allow.clone();
+                let lifecycle = lifecycle.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
                     if let Ok(Ok(tls)) = tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
-                        server::serve(tls, hash, relay_allow).await;
+                        server::serve(tls, hash, relay_allow, lifecycle).await;
                     }
                 });
             }
         }
     }
-    // SIGTERM/SIGINT 触发排空关闭；排空语义在 lifecycle 模块实现。
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     Ok(())
+}
+
+fn begin_shutdown(
+    lifecycle: &Arc<lifecycle::Lifecycle>,
+    done: Option<tokio::sync::oneshot::Sender<()>>,
+) {
+    let lifecycle = lifecycle.clone();
+    tokio::spawn(async move {
+        lifecycle.begin_drain().await.ok();
+        if let Some(done) = done {
+            let _ = done.send(());
+        }
+    });
 }

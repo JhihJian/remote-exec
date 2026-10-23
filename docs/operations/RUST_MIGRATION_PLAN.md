@@ -14,12 +14,12 @@
 
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
-| exec / exec.stream / file.read / file.write | 完整，测试覆盖 | 完整，行为基本等价 | 已覆盖；需对齐：子进程 SIGTERM 宽限（Node 先 TERM 后 KILL，Rust 直接 KILL）、exec.stream 16KB 分片与发送停滞 30s 检测 |
+| exec / exec.stream / file.read / file.write | 完整，测试覆盖 | 完整，行为基本等价 | 已覆盖；Phase 1 已对齐进程组 SIGTERM→2 秒 KILL，终止后的管道排空仍保留尾部输出 |
 | /upload /download | 完整 | 完整（更严格：fsync、超时） | 已覆盖 |
-| relay | 完整（错误带 data.stage、外层 timeoutMs 覆盖、Binary 帧仅 Text 终态） | 完整（无 stage、无外层 timeoutMs、Binary 帧也按终态处理） | Phase 1 对齐可观察差异 |
+| relay | 完整（错误带 data.stage、外层 timeoutMs 覆盖、Binary 帧仅 Text 终态） | 完整（错误带 stage、外层 timeoutMs、TLS pin 有效期检查） | Phase 1 已对齐主要错误阶段、总超时和证书有效期；Binary 帧仍需协议专项复核 |
 | deploy.ssh 网关 RPC | 完整 | 缺失 | Phase 4 在 Rust daemon 实现（russh + SFTP） |
-| lifecycle 排空（readyz 503、RPC -32020、WS 升级 1013、drain 超时强关） | 完整 | 缺失（readyz 恒 200） | Phase 1 实现；supervisor 无中断升级依赖 |
-| SIGTERM 优雅退出 | 完整 | 部分（直接取消工作） | Phase 1 实现排空语义 |
+| lifecycle 排空（readyz 503、RPC -32020、WS 升级 1013、drain 超时强关） | 完整 | 已实现并有专项测试 | Phase 1 已关闭；supervisor 无中断升级依赖此行为 |
+| SIGTERM 优雅退出 | 完整 | 已实现排空、在途请求完成、超时强关 | Phase 1 已关闭 |
 | --insecure-http 回环明文 | 有（仅测试使用） | 无 | 决策：Rust 保持仅 TLS，不实现明文模式 |
 
 ### 2.2 服务生命周期与升级（supervisor）
@@ -127,9 +127,10 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 范围：russh+russh-sftp 体积三方案实测（daemon 嵌入 / 仅 rex 嵌入 / 拆分 deploy 二进制，x86_64 与 ARM64 各测）；workspace 结构落地；2MB 门禁结论写回本文档。
 退出条件：三个方案的压缩包与二进制体积数字在案；crate 结构决策定案。
 
-### Phase 1：服务包协议生产化
+### Phase 1：服务包协议生产化（已完成实现，待提交）
 范围：lifecycle 排空（readyz 503、RPC -32020、WS 1013、drain 超时强关、SIGTERM 优雅退出、--drain-timeout-ms）；exec SIGTERM 宽限、stream 16KB 分片与停滞检测；relay stage/timeoutMs/Binary 帧对齐；PinnedCertificateVerifier 有效期修正；生产凭据路径参数化。基线测试逐条对应 test/daemon/lifecycle.js 与 test/integration/client.js 口径。
-退出条件：排空与差异对齐在 Rust daemon 有回归证据；体积门禁复测；Pi extension 对 Rust daemon 冒烟通过。
+退出条件：排空与差异对齐在 Rust daemon 有回归证据；体积门禁复测；Pi extension 对 Rust daemon 冒烟通过。当前证据：`runner.js` 18 项、`drain.js` 6 项、Rust 单测 3 项、clippy `-D warnings`、supervisor 回归、x86_64 离线包 1,144,354 字节并通过无 Node/OpenSSL/Cargo 网络隔离安装。
+剩余阻断项：ARM64 重新打包及离线安装证据、Pi extension 冒烟、正式 supervisor/systemd/ctl 交付、deploy.ssh、rex 客户端和生产迁移尚未完成，因此不能据此宣布 Rust 已替换 Node。
 
 ### Phase 2：supervisor 生产化与升级编排
 范围：start spawn 路径、retire 语义对齐（SIGTERM 等待退出）、权限 drop（root supervisor → 服务用户 daemon）、状态持久化与重启恢复（含 state 损坏拒绝启动）、systemd unit、ctl upgrade/rollback/retire/status（两段式）、候选失败保护。

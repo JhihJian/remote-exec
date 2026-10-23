@@ -46,6 +46,7 @@ jobs:
       - name: 验证现有客户端和异常行为
         run: |
           node test/rust-prototype/runner.js
+          node test/rust-prototype/drain.js
           node test/rust-prototype/supervisor.js
       - name: 准备离线验证镜像
         run: docker pull debian:12-slim

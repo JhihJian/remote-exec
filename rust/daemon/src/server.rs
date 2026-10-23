@@ -78,6 +78,7 @@ fn query_path(req: &Request<Incoming>) -> Result<String, AnyError> {
 async fn upload(
     mut req: Request<Incoming>,
     path: &std::path::Path,
+    _guard: crate::lifecycle::Guard,
 ) -> Result<Response<Body>, AnyError> {
     let (temp, mut file) = files::Temporary::create(path).await?;
     let mut hash = Sha256::new();
@@ -102,41 +103,56 @@ async fn upload(
         "application/json",
     ))
 }
-async fn download(path: &std::path::Path) -> Result<Response<Body>, AnyError> {
+async fn download(
+    path: &std::path::Path,
+    guard: crate::lifecycle::Guard,
+) -> Result<Response<Body>, AnyError> {
     let file = files::open_regular(path).await?;
     let size = file.metadata().await?.len();
-    let stream = futures_util::stream::try_unfold((file, size), |(mut file, left)| async move {
-        if left == 0 {
-            return Ok::<_, AnyError>(None);
-        }
-        let mut data = vec![0; left.min(64 * 1024) as usize];
-        let n = file.read(&mut data).await?;
-        if n == 0 {
-            return Err("下载过程文件缩短".into());
-        }
-        data.truncate(n);
-        Ok(Some((
-            Frame::data(Bytes::from(data)),
-            (file, left - n as u64),
-        )))
-    });
+    let stream = futures_util::stream::try_unfold(
+        (file, size, guard),
+        |(mut file, left, guard)| async move {
+            if left == 0 {
+                drop(guard);
+                return Ok::<_, AnyError>(None);
+            }
+            let mut data = vec![0; left.min(64 * 1024) as usize];
+            let n = file.read(&mut data).await?;
+            if n == 0 {
+                return Err("下载过程文件缩短".into());
+            }
+            data.truncate(n);
+            Ok(Some((
+                Frame::data(Bytes::from(data)),
+                (file, left - n as u64, guard),
+            )))
+        },
+    );
     Ok(Response::builder()
         .header("content-type", "application/octet-stream")
         .header("content-length", size)
         .body(StreamBody::new(stream).boxed_unsync())?)
 }
 
-pub async fn serve<S>(socket: S, hash: [u8; 32], relay_allow: Vec<String>)
-where
+pub async fn serve<S>(
+    socket: S,
+    hash: [u8; 32],
+    relay_allow: Vec<String>,
+    lifecycle: std::sync::Arc<crate::lifecycle::Lifecycle>,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (upgrade_tx, upgrade_rx) = tokio::sync::oneshot::channel();
     let upgrade_tx = Arc::new(Mutex::new(Some(upgrade_tx)));
+    let lifecycle_for_session = lifecycle.clone();
     let service = service_fn(move |mut req: Request<Incoming>| {
         let upgrade_tx = upgrade_tx.clone();
+        let lifecycle = lifecycle.clone();
         async move {
             let result = if req.headers().contains_key("upgrade") {
-                if req.headers().contains_key("origin") {
+                if !lifecycle.accepting() {
+                    response(StatusCode::SERVICE_UNAVAILABLE, "draining\n", "text/plain")
+                } else if req.headers().contains_key("origin") {
                     error(StatusCode::FORBIDDEN, "Origin 不允许")
                 } else if !auth::authorized(req.headers(), &hash) {
                     error(StatusCode::UNAUTHORIZED, "unauthorized")
@@ -189,33 +205,45 @@ where
                 }
             } else {
                 match (req.method().as_str(), req.uri().path()) {
-                    ("GET", "/healthz" | "/readyz") => {
-                        response(StatusCode::OK, "ok\n", "text/plain")
+                    ("GET", "/healthz") => response(StatusCode::OK, "ok\n", "text/plain"),
+                    ("GET", "/readyz") => {
+                        if lifecycle.accepting() {
+                            response(StatusCode::OK, "ok\n", "text/plain")
+                        } else {
+                            response(StatusCode::SERVICE_UNAVAILABLE, "draining\n", "text/plain")
+                        }
                     }
                     ("POST", "/upload") | ("GET", "/download") => {
                         if !auth::authorized(req.headers(), &hash) {
                             error(StatusCode::UNAUTHORIZED, "unauthorized")
                         } else {
-                            match query_path(&req) {
-                                Err(e) => error(StatusCode::BAD_REQUEST, e),
-                                Ok(path) => {
-                                    let is_upload = req.method() == hyper::Method::POST;
-                                    let result = if is_upload {
-                                        upload(req, std::path::Path::new(&path)).await
-                                    } else {
-                                        download(std::path::Path::new(&path)).await
-                                    };
-                                    result.unwrap_or_else(|e| {
-                                        error(
-                                            if is_upload {
-                                                StatusCode::INTERNAL_SERVER_ERROR
-                                            } else {
-                                                StatusCode::NOT_FOUND
-                                            },
-                                            e,
-                                        )
-                                    })
-                                }
+                            match lifecycle.acquire("http") {
+                                None => response(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    "draining\n",
+                                    "text/plain",
+                                ),
+                                Some(guard) => match query_path(&req) {
+                                    Err(e) => error(StatusCode::BAD_REQUEST, e),
+                                    Ok(path) => {
+                                        let is_upload = req.method() == hyper::Method::POST;
+                                        let result = if is_upload {
+                                            upload(req, std::path::Path::new(&path), guard).await
+                                        } else {
+                                            download(std::path::Path::new(&path), guard).await
+                                        };
+                                        result.unwrap_or_else(|e| {
+                                            error(
+                                                if is_upload {
+                                                    StatusCode::INTERNAL_SERVER_ERROR
+                                                } else {
+                                                    StatusCode::NOT_FOUND
+                                                },
+                                                e,
+                                            )
+                                        })
+                                    }
+                                },
                             }
                         }
                     }
@@ -239,6 +267,6 @@ where
             .max_frame_size(Some(files::MAX_PAYLOAD));
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(socket), Role::Server, Some(config))
             .await;
-        rpc::session(ws, relay_allow).await;
+        rpc::session(ws, relay_allow, lifecycle_for_session).await;
     }
 }

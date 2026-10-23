@@ -3,20 +3,97 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncRead, AsyncReadExt},
     process::Command,
     sync::{mpsc, watch},
 };
 use tokio_tungstenite::tungstenite::Message;
 
-// A synchronous guard also runs when the request/connection task is aborted.
-struct ProcessGroup(i32);
+// 同步 Drop 也会触发终止，保证连接任务被 abort 时子进程仍被回收。
+struct ProcessGroup {
+    pid: i32,
+    done: std::sync::atomic::AtomicBool,
+}
+impl ProcessGroup {
+    fn new(pid: i32) -> Self {
+        Self {
+            pid,
+            done: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    // 子进程已自然退出时解除终止义务。
+    fn disarm(&self) {
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+    }
+    // 与 Node 版一致：先 SIGTERM，2 秒后仍存活则 SIGKILL。
+    fn terminate(&self) {
+        if self.done.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+        // SAFETY: 负 PID 指向为该子进程创建的进程组。
+        unsafe {
+            libc::kill(-self.pid, libc::SIGTERM);
+        }
+        let pid = self.pid;
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(2));
+            // SAFETY: 同上。
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        });
+    }
+}
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
-        // SAFETY: negative PID addresses the process group created for this child.
-        unsafe {
-            libc::kill(-self.0, libc::SIGKILL);
+        self.terminate();
+    }
+}
+
+async fn drain_remaining<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+    count: &mut usize,
+    cap: usize,
+    truncated: &mut bool,
+) -> Result<(), std::io::Error> {
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        let size = reader.read(&mut chunk).await?;
+        if size == 0 {
+            return Ok(());
         }
+        let room = cap.saturating_sub(*count);
+        buffer.extend_from_slice(&chunk[..size.min(room)]);
+        *count += size.min(room);
+        *truncated |= size > room;
+    }
+}
+async fn drain_stream_remaining<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    stream: &str,
+    id: &Value,
+    out: &mpsc::Sender<Message>,
+    count: &mut usize,
+) -> Result<(), RpcError> {
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        let size = reader.read(&mut chunk).await?;
+        if size == 0 {
+            return Ok(());
+        }
+        *count += size;
+        send(
+            out,
+            json!({
+                "id": id,
+                "event": "output",
+                "stream": stream,
+                "dataB64": STANDARD.encode(&chunk[..size]),
+            }),
+        )
+        .await?;
     }
 }
 
@@ -58,7 +135,7 @@ pub async fn run(
         )?);
     }
     let mut child = cmd.spawn()?;
-    let group = ProcessGroup(
+    let group = ProcessGroup::new(
         child
             .id()
             .ok_or_else(|| RpcError::new(-32000, "缺少进程 PID"))? as i32,
@@ -116,10 +193,36 @@ pub async fn run(
             truncated |= size > room;
         }
     }
-    drop(group);
+    if reason != "exited" {
+        group.terminate();
+    } else if status.is_some() {
+        group.disarm();
+    }
     if status.is_none() {
         status = Some(child.wait().await?);
     }
+    if streaming {
+        drain_stream_remaining(&mut stdout, "stdout", id, out, &mut counts[0]).await?;
+        drain_stream_remaining(&mut stderr, "stderr", id, out, &mut counts[1]).await?;
+    } else {
+        drain_remaining(
+            &mut stdout,
+            &mut buffers[0],
+            &mut counts[0],
+            cap,
+            &mut truncated,
+        )
+        .await?;
+        drain_remaining(
+            &mut stderr,
+            &mut buffers[1],
+            &mut counts[1],
+            cap,
+            &mut truncated,
+        )
+        .await?;
+    }
+    drop(group);
     let code = match reason {
         "timeout" => 124,
         "cancelled" => 130,

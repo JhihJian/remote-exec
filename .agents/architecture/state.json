@@ -188,23 +188,23 @@
     },
     {
       "id": "rust-offline-prototype-boundary",
-      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已加入 supervisor 状态机验证；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包。正式 Node daemon、SSH 部署、Rust supervisor 安装集成和客户端仍处于迁移过程中。",
+      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、加入 supervisor 状态机验证；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包。正式 SSH 部署、Rust supervisor 安装集成、升级编排和客户端仍处于迁移过程中。",
       "documentRole": "overview",
       "evidence": [
         {
-          "path": "prototype/rust-daemon/src/main.rs",
+          "path": "rust/daemon/src/main.rs",
           "locator": "mod server;"
         },
         {
-          "path": "prototype/rust-daemon/src/relay.rs",
+          "path": "rust/daemon/src/relay.rs",
           "locator": "const DEFAULT_ALLOW: [&str; 4]"
         },
         {
-          "path": "prototype/rust-daemon/src/relay.rs",
+          "path": "rust/daemon/src/relay.rs",
           "locator": "relay 仅支持 exec/exec.stream/file.read/file.write，禁止嵌套 relay"
         },
         {
-          "path": "prototype/rust-daemon/src/supervisor.rs",
+          "path": "rust/daemon/src/supervisor.rs",
           "locator": "pub async fn run(args: &[String])"
         },
         {
@@ -215,6 +215,10 @@
         {
           "path": "test/rust-prototype/runner.js",
           "locator": "100MB 文件流式上传下载哈希一致"
+        },
+        {
+          "path": "test/rust-prototype/drain.js",
+          "locator": "console.log(`Rust drain/relay 语义: ${passed} checks passed`)"
         },
         {
           "path": "test/rust-prototype/offline.sh",

@@ -8,12 +8,14 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 pub struct RpcError {
     pub code: i32,
     pub message: String,
+    pub data: Option<Value>,
 }
 impl RpcError {
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
+            data: None,
         }
     }
     pub fn invalid(message: impl Into<String>) -> Self {
@@ -46,11 +48,26 @@ pub async fn send(out: &mpsc::Sender<Message>, value: Value) -> Result<(), RpcEr
     .map_err(|_| RpcError::new(-32000, "连接已关闭"))
 }
 
-pub async fn session<S>(ws: WebSocketStream<S>, relay_allow: Vec<String>)
-where
+pub async fn session<S>(
+    ws: WebSocketStream<S>,
+    relay_allow: Vec<String>,
+    lifecycle: std::sync::Arc<crate::lifecycle::Lifecycle>,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (mut sink, mut input) = ws.split();
+    let Some(_connection) = lifecycle.acquire("websocket") else {
+        let _ = sink
+            .send(Message::Close(Some(
+                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again,
+                    reason: "draining".into(),
+                },
+            )))
+            .await;
+        return;
+    };
+    let mut force = lifecycle.force_watcher();
     let (requests, mut queue) = mpsc::channel(1);
     let (out, mut outputs) = mpsc::channel(4);
     let (cancel_tx, mut cancel) = watch::channel(false);
@@ -92,6 +109,7 @@ where
         let msg = tokio::select! {
             biased;
             _ = cancelled(&mut cancel) => break,
+            _ = force.changed() => break, // 排空超时强制关闭
             msg = queue.recv() => match msg { Some(msg) => msg, None => break },
         };
         let request: Value = match serde_json::from_slice(&msg.into_data()) {
@@ -111,15 +129,23 @@ where
         };
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let params = request.get("params").cloned().unwrap_or(json!({}));
+        let Some(_rpc_guard) = lifecycle.acquire("rpc") else {
+            let error = RpcError::new(-32020, "daemon 正在排空，不再接受新的 RPC");
+            if send(&out, error_response(&id, &error)).await.is_err() {
+                break;
+            }
+            continue;
+        };
         let mut request_cancel = cancel.clone();
         let result = tokio::select! {
             biased;
             _ = cancelled(&mut cancel) => break,
+            _ = force.changed() => break,
             result = dispatch(&request, &params, &id, &out, &mut request_cancel, &relay_allow) => result,
         };
         let response = match result {
             Ok(result) => json!({"id": id, "result": result}),
-            Err(e) => json!({"id": id, "error": {"code": e.code, "message": e.message}}),
+            Err(e) => error_response(&id, &e),
         };
         if send(&out, response).await.is_err() {
             break;
@@ -127,6 +153,14 @@ where
     }
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+}
+
+fn error_response(id: &Value, error: &RpcError) -> Value {
+    let mut body = json!({"code": error.code, "message": error.message});
+    if let Some(data) = &error.data {
+        body["data"] = data.clone();
+    }
+    json!({"id": id, "error": body})
 }
 
 async fn dispatch(

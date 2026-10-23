@@ -328,13 +328,22 @@ async function main() {
       }
       assert.equal((await c.call("exec", { command: "printf alive" })).exitCode, 0);
     });
-    await test("SIGTERM 退出取消活跃命令与子进程", async () => {
-      const pidfile = path.join(tmp, "shutdown-pid");
-      const pending = c.call("exec", { command: `sleep 60 & echo $! > ${shellQuote(pidfile)}; wait` });
-      const rejected = assert.rejects(pending, /关闭|中断/);
-      await eventually(() => fs.existsSync(pidfile));
-      daemon.kill("SIGTERM"); await exited; await rejected;
-      await eventually(() => !running(Number(fs.readFileSync(pidfile, "utf8"))));
+    await test("SIGTERM 排空：拒绝新请求、既有请求完成后退出", async () => {
+      const pending = c.call("exec", { command: "sleep 0.6; printf drained" });
+      await wait(100);
+      daemon.kill("SIGTERM");
+      await eventually(async () => (await request("GET", "/readyz")).status === 503);
+      const readyz = await request("GET", "/readyz");
+      assert.equal(readyz.body.toString(), "draining\n");
+      assert.match((await raw(upgrade)).toString(), /^HTTP\/1\.1 503/);
+      assert.equal((await request("POST", "/upload?path=/tmp/not-written", auth, "x")).status, 503);
+      await assert.rejects(c.call("exec", { command: "true" }), /-32020/);
+      const r = await pending;
+      assert.equal(r.exitCode, 0);
+      assert.equal(Buffer.from(r.stdoutB64, "base64").toString(), "drained");
+      // 排空会等待既有连接关闭；客户端断开后 daemon 才退出。
+      c.close();
+      await exited;
       assert.equal(daemon.exitCode, 0);
     });
     console.log(`Rust prototype: ${passed} checks passed`);

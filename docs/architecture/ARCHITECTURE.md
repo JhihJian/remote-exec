@@ -98,9 +98,9 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 
 ## Rust 离线原型边界
 
-Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、加入 supervisor 状态机验证；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包。正式 SSH 部署、Rust supervisor 安装集成、升级编排和客户端仍处于迁移过程中。
+Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。正式 SSH 部署与客户端仍处于迁移过程中。
 
-Rust 原型保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和可写可执行的目录，安装脚本使用常见系统工具；root 安装可创建独立 systemd 服务。Rust daemon 的 SIGTERM 进入排空，既有请求完成后退出，排空超时强制关闭连接；完整迁移还需实现网关部署、正式升级编排和弱网 SSH 续传。
+Rust 原型保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和可写可执行的目录，安装脚本使用常见系统工具；root 安装可创建独立 systemd 服务。Rust daemon 的 SIGTERM 进入排空，既有请求完成后退出，排空超时强制关闭连接；完整迁移还需实现网关部署与弱网 SSH 续传。
 
 Rust 图中调用向下委托，同层协作由明确连线表达，原型与 Node 服务是两个独立交付进程。模块映射如下：
 
@@ -114,6 +114,7 @@ Rust 图中调用向下委托，同层协作由明确连线表达，原型与 No
 | Rust token 校验 | 哈希加载、Bearer 校验 | `rust/daemon/src/auth.rs` |
 | Rust 生命周期协调 | 就绪状态、资源计数、排空和强制关闭通知 | `rust/daemon/src/lifecycle.rs` |
 | Rust relay 操作 | 单跳白名单、目标 TLS、阶段化错误和总超时 | `rust/daemon/src/relay.rs` |
+| Rust supervisor 与升级编排 | 状态持久化、重启恢复、降权 spawn、同 uid 控制面、ctl 两段式升级 | `rust/daemon/src/supervisor.rs`、`rust/daemon/src/ctl.rs` |
 
 构建包由 `scripts/build-rust-prototype.sh` 与 `rust/packaging/` 生成，协议、排空、relay 和禁网验证位于 `test/rust-prototype/`。运行条件、测量口径和剩余迁移范围见 [Rust 离线原型](../operations/RUST_OFFLINE_PROTOTYPE.md)。Rust 测试目前作为迁移期等价性证据，正式顶层能力仍需在客户端、部署和发布路径迁移完成后调整归属。
 

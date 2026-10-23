@@ -7,7 +7,7 @@ node_modules/
 # 自包含发布包
 dist/
 
-# Rust 原型构建目录
-prototype/rust-daemon/target/
+# Rust 构建目录
+rust/target/
 rust/target/
 rust/daemon/target/

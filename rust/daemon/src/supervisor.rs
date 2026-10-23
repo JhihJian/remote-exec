@@ -1,7 +1,16 @@
 use crate::relay;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap, io, net::IpAddr, os::unix::fs::PermissionsExt, path::PathBuf, sync::Arc,
+    collections::HashMap,
+    io,
+    net::IpAddr,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -28,6 +37,14 @@ struct Generation {
     connections: usize,
     previous: Option<String>,
     start_error: Option<String>,
+    launch: Option<Launch>,
+}
+
+#[derive(Clone, Debug)]
+struct Launch {
+    command: Vec<String>,
+    cwd: Option<String>,
+    env: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -38,8 +55,308 @@ struct State {
 
 type SharedState = Arc<Mutex<State>>;
 
+const STATE_VERSION: u64 = 1;
+static NEXT_STATE_TEMP: AtomicU64 = AtomicU64::new(0);
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+fn exact_object<'a>(
+    value: &'a Value,
+    label: &str,
+    keys: &[&str],
+) -> io::Result<&'a serde_json::Map<String, Value>> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(format!("{label} 必须是 JSON 对象")))?;
+    if object.len() != keys.len() || keys.iter().any(|key| !object.contains_key(*key)) {
+        return Err(invalid(format!("{label} 包含未知或缺失字段")));
+    }
+    Ok(object)
+}
+
+fn parse_launch(value: &Value, label: &str, managed: bool) -> io::Result<Option<Launch>> {
+    let Some(object) = value.as_object() else {
+        if value.is_null() && !managed {
+            return Ok(None);
+        }
+        return Err(invalid(format!("{label} 必须是对象或 null")));
+    };
+    if !managed {
+        return Err(invalid(format!("{label} 非托管 generation 不得设置")));
+    }
+    if object.len() != 3
+        || !object.contains_key("command")
+        || !object.contains_key("cwd")
+        || !object.contains_key("env")
+    {
+        return Err(invalid(format!("{label} 包含未知或缺失字段")));
+    }
+    let command = object
+        .get("command")
+        .and_then(Value::as_array)
+        .filter(|command| !command.is_empty())
+        .ok_or_else(|| invalid(format!("{label}.command 必须是非空数组")))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| invalid(format!("{label}.command 参数必须是字符串")))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let cwd = match object.get("cwd") {
+        Some(value) if value.is_null() => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| invalid(format!("{label}.cwd 必须是字符串或 null")))?
+                .to_owned(),
+        ),
+        None => unreachable!(),
+    };
+    let env = object
+        .get("env")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid(format!("{label}.env 必须是对象")))?
+        .iter()
+        .map(|(key, value)| {
+            Ok((
+                key.clone(),
+                value
+                    .as_str()
+                    .ok_or_else(|| invalid(format!("{label}.env 值必须是字符串")))?
+                    .to_owned(),
+            ))
+        })
+        .collect::<io::Result<HashMap<_, _>>>()?;
+    Ok(Some(Launch { command, cwd, env }))
+}
+
+fn persistent_state(state: &State) -> Value {
+    let mut generations: Vec<_> = state
+        .generations
+        .values()
+        .map(|generation| {
+            let (command, cwd, env) = generation
+                .launch
+                .as_ref()
+                .map_or((Value::Null, Value::Null, Value::Null), |launch| {
+                    (json!(launch.command), json!(launch.cwd), json!(launch.env))
+                });
+            json!({
+                "name": generation.name,
+                "state": generation.state,
+                "backend": {
+                    "host": generation.backend.host,
+                    "port": generation.backend.port,
+                    "protocol": generation.backend.protocol,
+                    "ca": generation.backend.ca,
+                },
+                "managed": generation.managed,
+                "command": command,
+                "cwd": cwd,
+                "env": env,
+                "previous": generation.previous,
+            })
+        })
+        .collect();
+    generations.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    json!({
+        "version": STATE_VERSION,
+        "active": state.active,
+        "generations": generations,
+    })
+}
+
+fn parse_persistent_state(value: Value) -> io::Result<State> {
+    let object = exact_object(&value, "state", &["version", "active", "generations"])?;
+    if object.get("version").and_then(Value::as_u64) != Some(STATE_VERSION) {
+        return Err(invalid("state version 不受支持"));
+    }
+    let active = match object.get("active") {
+        Some(value) if value.is_null() => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| invalid("state.active 必须是非空字符串或 null"))?
+                .to_owned(),
+        ),
+        None => unreachable!(),
+    };
+    let values = object
+        .get("generations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("state.generations 必须是数组"))?;
+    let mut generations = HashMap::new();
+    for (index, value) in values.iter().enumerate() {
+        let label = format!("state.generations[{index}]");
+        let generation = exact_object(
+            value,
+            &label,
+            &[
+                "name", "state", "backend", "managed", "command", "cwd", "env", "previous",
+            ],
+        )?;
+        let name = generation
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid(format!("{label}.name 必须是非空字符串")))?
+            .to_owned();
+        if generations.contains_key(&name) {
+            return Err(invalid(format!("state 中 generation 重复: {name}")));
+        }
+        let state_name = generation
+            .get("state")
+            .and_then(Value::as_str)
+            .filter(|state| matches!(*state, "candidate" | "active" | "draining"))
+            .ok_or_else(|| invalid(format!("{label}.state 无效")))?
+            .to_owned();
+        let backend_value = generation
+            .get("backend")
+            .ok_or_else(|| invalid(format!("{label}.backend 缺失")))?;
+        let backend_object = exact_object(
+            backend_value,
+            &format!("{label}.backend"),
+            &["host", "port", "protocol", "ca"],
+        )?;
+        if !backend_object
+            .get("ca")
+            .is_some_and(|value| value.is_null() || value.is_string())
+        {
+            return Err(invalid(format!("{label}.backend.ca 必须是字符串或 null")));
+        }
+        let backend = validate_backend(backend_value, &format!("{label}.backend"))?;
+        let managed = generation
+            .get("managed")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| invalid(format!("{label}.managed 必须是布尔值")))?;
+        let launch = parse_launch(
+            &json!({
+                "command": generation
+                    .get("command")
+                    .ok_or_else(|| invalid(format!("{label}.command 缺失")))?,
+                "cwd": generation
+                    .get("cwd")
+                    .ok_or_else(|| invalid(format!("{label}.cwd 缺失")))?,
+                "env": generation
+                    .get("env")
+                    .ok_or_else(|| invalid(format!("{label}.env 缺失")))?,
+            }),
+            &format!("{label}.launch"),
+            managed,
+        )?;
+        let previous = match generation.get("previous") {
+            Some(value) if value.is_null() => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| invalid(format!("{label}.previous 必须是非空字符串或 null")))?
+                    .to_owned(),
+            ),
+            None => unreachable!(),
+        };
+        generations.insert(
+            name.clone(),
+            Generation {
+                name,
+                state: state_name,
+                backend,
+                pid: None,
+                managed,
+                connections: 0,
+                previous,
+                start_error: None,
+                launch,
+            },
+        );
+    }
+    if let Some(active) = &active {
+        let generation = generations
+            .get(active)
+            .ok_or_else(|| invalid("state.active 引用了不存在的 generation"))?;
+        if generation.state != "active" {
+            return Err(invalid("state.active 必须引用 active generation"));
+        }
+    }
+    if generations
+        .values()
+        .filter(|generation| generation.state == "active")
+        .count()
+        != usize::from(active.is_some())
+    {
+        return Err(invalid("state 中 active generation 与 active 字段不一致"));
+    }
+    for generation in generations.values() {
+        if let Some(previous) = &generation.previous
+            && !generations.contains_key(previous)
+        {
+            return Err(invalid(format!(
+                "generation {} 的 previous 引用了不存在的 generation",
+                generation.name
+            )));
+        }
+    }
+    Ok(State {
+        active,
+        generations,
+    })
+}
+
+async fn load_state(path: Option<&Path>) -> io::Result<State> {
+    let Some(path) = path else {
+        return Ok(State::default());
+    };
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(State::default()),
+        Err(error) => return Err(error),
+    };
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("state JSON 无效: {error}")))?;
+    parse_persistent_state(value)
+}
+
+async fn persist_state(state: &State, path: Option<&Path>) -> io::Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let data = serde_json::to_vec_pretty(&persistent_state(state))
+        .map_err(|error| invalid(format!("state JSON 编码失败: {error}")))?;
+    let temp_path = parent.join(format!(
+        ".supervisor-state-{}-{}",
+        std::process::id(),
+        NEXT_STATE_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp_path)
+    {
+        Ok(file) => tokio::fs::File::from_std(file),
+        Err(error) => return Err(error),
+    };
+    let result = async {
+        file.write_all(&data).await?;
+        file.sync_all().await
+    }
+    .await;
+    drop(file);
+    if let Err(error) = result {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
+    if let Err(error) = tokio::fs::rename(&temp_path, path).await {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn validate_backend(value: &Value, label: &str) -> io::Result<Backend> {
@@ -193,7 +510,11 @@ async fn respond<W: AsyncWrite + Unpin>(
     writer.write_all(format!("{}\n", response).as_bytes()).await
 }
 
-async fn register(state: &SharedState, request: &Value) -> Result<Value, String> {
+async fn register(
+    state: &SharedState,
+    request: &Value,
+    state_path: Option<&Path>,
+) -> Result<Value, String> {
     let name = request
         .get("generation")
         .and_then(Value::as_str)
@@ -212,7 +533,7 @@ async fn register(state: &SharedState, request: &Value) -> Result<Value, String>
     state.generations.insert(
         name.clone(),
         Generation {
-            name,
+            name: name.clone(),
             state: "candidate".into(),
             backend,
             pid: None,
@@ -220,12 +541,21 @@ async fn register(state: &SharedState, request: &Value) -> Result<Value, String>
             connections: 0,
             previous: None,
             start_error: None,
+            launch: None,
         },
     );
+    if let Err(error) = persist_state(&state, state_path).await {
+        state.generations.remove(&name);
+        return Err(format!("持久化 state 失败: {error}"));
+    }
     Ok(status(&state))
 }
 
-async fn start(state: &SharedState, request: &Value) -> Result<Value, String> {
+async fn start(
+    state: &SharedState,
+    request: &Value,
+    state_path: Option<&Path>,
+) -> Result<Value, String> {
     let name = request
         .get("generation")
         .and_then(Value::as_str)
@@ -243,27 +573,56 @@ async fn start(state: &SharedState, request: &Value) -> Result<Value, String> {
         .get("command")
         .and_then(Value::as_array)
         .ok_or("start 需要 command 数组")?;
+    let command = command
+        .iter()
+        .map(|argument| {
+            argument
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("command 参数必须是字符串")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let program = command
         .first()
-        .and_then(Value::as_str)
+        .map(String::as_str)
         .ok_or("command 不能为空")?;
+    let cwd = request
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let env: HashMap<String, String> = request
+        .get("env")
+        .and_then(Value::as_object)
+        .map(|env| {
+            env.iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let mut child = Command::new(program);
     for argument in command.iter().skip(1) {
-        child.arg(argument.as_str().ok_or("command 参数必须是字符串")?);
+        child.arg(argument);
     }
-    if let Some(cwd) = request.get("cwd").and_then(Value::as_str) {
+    if let Some(cwd) = &cwd {
         child.current_dir(cwd);
     }
-    if let Some(env) = request.get("env").and_then(Value::as_object) {
-        for (key, value) in env {
-            if let Some(value) = value.as_str() {
-                child.env(key, value);
+    for (key, value) in &env {
+        child.env(key, value);
+    }
+    unsafe {
+        child.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(io::Error::last_os_error());
             }
-        }
+            Ok(())
+        });
     }
     let mut process = child.spawn().map_err(|error| error.to_string())?;
     let pid = process.id().ok_or("无法取得候选进程 PID")?;
-    {
+    let launch = Launch { command, cwd, env };
+    let persist_error = {
         let mut state = state.lock().await;
         state.generations.insert(
             name.clone(),
@@ -276,10 +635,22 @@ async fn start(state: &SharedState, request: &Value) -> Result<Value, String> {
                 connections: 0,
                 previous: None,
                 start_error: None,
+                launch: Some(launch),
             },
         );
+        persist_state(&state, state_path).await.err()
+    };
+    if let Some(error) = persist_error {
+        let _ = signal_process_group(pid, libc::SIGKILL);
+        let _ = process.kill().await;
+        let _ = process.wait().await;
+        let message = error.to_string();
+        let mut state = state.lock().await;
+        state.generations.remove(&name);
+        return Err(format!("持久化 state 失败: {message}"));
     }
     let monitor_state = state.clone();
+    let monitor_state_path = state_path.map(Path::to_path_buf);
     tokio::spawn(async move {
         let _ = process.wait().await;
         let mut state = monitor_state.lock().await;
@@ -296,12 +667,20 @@ async fn start(state: &SharedState, request: &Value) -> Result<Value, String> {
         if was_active {
             state.active = None;
         }
+        if was_active && let Err(error) = persist_state(&state, monitor_state_path.as_deref()).await
+        {
+            eprintln!("持久化 supervisor state 失败: {error}");
+        }
     });
     let state = state.lock().await;
     Ok(status(&state))
 }
 
-async fn promote(state: &SharedState, request: &Value) -> Result<Value, String> {
+async fn promote(
+    state: &SharedState,
+    request: &Value,
+    state_path: Option<&Path>,
+) -> Result<Value, String> {
     let name = request
         .get("generation")
         .and_then(Value::as_str)
@@ -332,23 +711,59 @@ async fn promote(state: &SharedState, request: &Value) -> Result<Value, String> 
         .await
         .map_err(|error| error.to_string())?;
     let mut state = state.lock().await;
-    if let Some(previous_name) = state.active.clone()
+    let generation = state
+        .generations
+        .get(&name)
+        .ok_or_else(|| format!("generation 不存在: {name}"))?;
+    if !matches!(generation.state.as_str(), "candidate" | "draining")
+        || generation.start_error.is_some()
+        || (generation.managed && generation.pid.is_none())
+    {
+        return Err(format!("{name} 候选进程已退出，不能 promote"));
+    }
+    let previous = state.active.clone();
+    let previous_state = previous
+        .as_ref()
+        .and_then(|previous| state.generations.get(previous))
+        .map(|generation| generation.state.clone());
+    let previous_target = state
+        .generations
+        .get(&name)
+        .and_then(|generation| generation.previous.clone());
+    if let Some(previous_name) = previous.clone()
         && let Some(previous) = state.generations.get_mut(&previous_name)
     {
         previous.state = "draining".into();
     }
-    let previous = state.active.clone();
     let generation = state
         .generations
         .get_mut(&name)
         .ok_or_else(|| format!("generation 不存在: {name}"))?;
-    generation.previous = previous;
+    generation.previous = previous.clone();
     generation.state = "active".into();
-    state.active = Some(name);
+    state.active = Some(name.clone());
+    if let Err(error) = persist_state(&state, state_path).await {
+        state.active = previous;
+        if let Some(previous_name) = state.active.clone()
+            && let Some(previous) = state.generations.get_mut(&previous_name)
+            && let Some(previous_state) = previous_state
+        {
+            previous.state = previous_state;
+        }
+        if let Some(generation) = state.generations.get_mut(&name) {
+            generation.state = "candidate".into();
+            generation.previous = previous_target;
+        }
+        return Err(format!("持久化 state 失败: {error}"));
+    }
     Ok(status(&state))
 }
 
-async fn drain(state: &SharedState, request: &Value) -> Result<Value, String> {
+async fn drain(
+    state: &SharedState,
+    request: &Value,
+    state_path: Option<&Path>,
+) -> Result<Value, String> {
     let name = request
         .get("generation")
         .and_then(Value::as_str)
@@ -357,15 +772,71 @@ async fn drain(state: &SharedState, request: &Value) -> Result<Value, String> {
     if state.active.as_deref() == Some(name) {
         return Err("不能 drain 当前 active generation，请先 promote 另一个 generation".into());
     }
-    let generation = state
-        .generations
-        .get_mut(name)
-        .ok_or_else(|| format!("generation 不存在: {name}"))?;
-    generation.state = "draining".into();
+    let old_state = {
+        let generation = state
+            .generations
+            .get_mut(name)
+            .ok_or_else(|| format!("generation 不存在: {name}"))?;
+        let old_state = generation.state.clone();
+        generation.state = "draining".into();
+        old_state
+    };
+    if let Err(error) = persist_state(&state, state_path).await {
+        if let Some(generation) = state.generations.get_mut(name) {
+            generation.state = old_state;
+        }
+        return Err(format!("持久化 state 失败: {error}"));
+    }
     Ok(status(&state))
 }
 
-async fn rollback(state: &SharedState) -> Result<Value, String> {
+fn process_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn process_group_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(-(pid as i32), 0) };
+    result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn signal_process_group(pid: u32, signal: libc::c_int) -> io::Result<()> {
+    if unsafe { libc::kill(-(pid as i32), signal) } == -1 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+async fn wait_process_group_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if !process_alive(pid) && !process_group_alive(pid) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn terminate_managed(pid: u32) -> io::Result<()> {
+    signal_process_group(pid, libc::SIGTERM)?;
+    if wait_process_group_exit(pid, Duration::from_secs(2)).await {
+        return Ok(());
+    }
+    signal_process_group(pid, libc::SIGKILL)?;
+    if wait_process_group_exit(pid, Duration::from_secs(2)).await {
+        Ok(())
+    } else {
+        Err(invalid(format!("托管进程组 {pid} 未退出")))
+    }
+}
+
+async fn rollback(state: &SharedState, state_path: Option<&Path>) -> Result<Value, String> {
     let name = {
         let state = state.lock().await;
         let active = state
@@ -378,42 +849,72 @@ async fn rollback(state: &SharedState) -> Result<Value, String> {
             .and_then(|generation| generation.previous.clone())
             .ok_or("没有上一版本可回滚")?
     };
-    promote(state, &json!({"generation": name})).await
+    promote(state, &json!({"generation": name}), state_path).await
 }
 
-async fn retire(state: &SharedState, request: &Value) -> Result<Value, String> {
+async fn retire(
+    state: &SharedState,
+    request: &Value,
+    state_path: Option<&Path>,
+) -> Result<Value, String> {
     let name = request
         .get("generation")
         .and_then(Value::as_str)
         .ok_or("generation 无效")?
         .to_owned();
-    let mut state = state.lock().await;
-    if state.active.as_deref() == Some(&name) {
+    let state_guard = state.lock().await;
+    if state_guard.active.as_deref() == Some(&name) {
         return Err("不能 retire active generation".into());
     }
+    let (pid, managed) = {
+        let generation = state_guard
+            .generations
+            .get(&name)
+            .ok_or_else(|| format!("generation 不存在: {name}"))?;
+        if generation.connections != 0 {
+            return Err("不能 retire 有活动连接的 generation".into());
+        }
+        (generation.pid, generation.managed)
+    };
+    drop(state_guard);
+    if managed && let Some(pid) = pid {
+        terminate_managed(pid)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let mut state = state.lock().await;
     let generation = state
         .generations
-        .get(&name)
+        .remove(&name)
         .ok_or_else(|| format!("generation 不存在: {name}"))?;
-    if generation.connections != 0 {
-        return Err("不能 retire 有活动连接的 generation".into());
-    }
-    let pid = generation.pid;
-    state.generations.remove(&name);
-    let result = status(&state);
-    drop(state);
-    if let Some(pid) = pid {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+    let previous_links: Vec<_> = state
+        .generations
+        .iter()
+        .filter(|(_, generation)| generation.previous.as_deref() == Some(name.as_str()))
+        .map(|(generation_name, generation)| (generation_name.clone(), generation.previous.clone()))
+        .collect();
+    for (generation_name, _) in &previous_links {
+        if let Some(generation) = state.generations.get_mut(generation_name) {
+            generation.previous = None;
         }
     }
-    Ok(result)
+    if let Err(error) = persist_state(&state, state_path).await {
+        state.generations.insert(name, generation);
+        for (generation_name, previous) in previous_links {
+            if let Some(generation) = state.generations.get_mut(&generation_name) {
+                generation.previous = previous;
+            }
+        }
+        return Err(format!("持久化 state 失败: {error}"));
+    }
+    Ok(status(&state))
 }
 
 async fn handle_control(
     socket: UnixStream,
     state: SharedState,
     queue: Arc<Mutex<()>>,
+    state_path: Option<PathBuf>,
 ) -> io::Result<()> {
     let (reader, writer) = socket.into_split();
     let mut lines = tokio::io::BufReader::new(reader).lines();
@@ -430,12 +931,12 @@ async fn handle_control(
             let state = state.lock().await;
             Ok(status(&state))
         }
-        "register" => register(&state, &request).await,
-        "start" => start(&state, &request).await,
-        "promote" => promote(&state, &request).await,
-        "drain" => drain(&state, &request).await,
-        "rollback" => rollback(&state).await,
-        "retire" => retire(&state, &request).await,
+        "register" => register(&state, &request, state_path.as_deref()).await,
+        "start" => start(&state, &request, state_path.as_deref()).await,
+        "promote" => promote(&state, &request, state_path.as_deref()).await,
+        "drain" => drain(&state, &request, state_path.as_deref()).await,
+        "rollback" => rollback(&state, state_path.as_deref()).await,
+        "retire" => retire(&state, &request, state_path.as_deref()).await,
         method => Err(format!("未知控制方法: {method}")),
     };
     respond(writer, result).await
@@ -445,6 +946,7 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     let mut host = "127.0.0.1".to_owned();
     let mut port = None;
     let mut control_path = None;
+    let mut state_path = None;
     let mut old_host = None;
     let mut old_port = None;
     let mut index = 0;
@@ -454,6 +956,7 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
             "--host" => host = value.clone(),
             "--port" => port = Some(value.parse::<u16>()?),
             "--control" => control_path = Some(PathBuf::from(value)),
+            "--state" => state_path = Some(PathBuf::from(value)),
             "--old-host" => old_host = Some(value.clone()),
             "--old-port" => old_port = Some(value.parse::<u16>()?),
             _ => return Err(format!("未知 supervisor 参数: {}", args[index]).into()),
@@ -464,7 +967,10 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
         .filter(|port| *port > 0)
         .ok_or("supervisor 必须提供 1-65535 的 --port")?;
     let control_path = control_path.ok_or("supervisor 必须提供 --control")?;
-    let state = Arc::new(Mutex::new(State::default()));
+    let state_path = state_path;
+    let loaded_state = load_state(state_path.as_deref()).await?;
+    let state = Arc::new(Mutex::new(loaded_state));
+    let mut state_changed = false;
     match (old_host, old_port) {
         (Some(host), Some(port)) => {
             let backend = validate_backend(
@@ -472,23 +978,31 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
                 "oldBackend",
             )?;
             let mut state = state.lock().await;
-            state.active = Some("old".into());
-            state.generations.insert(
-                "old".into(),
-                Generation {
-                    name: "old".into(),
-                    state: "active".into(),
-                    backend,
-                    pid: None,
-                    managed: false,
-                    connections: 0,
-                    previous: None,
-                    start_error: None,
-                },
-            );
+            if state.generations.is_empty() && state.active.is_none() {
+                state.active = Some("old".into());
+                state.generations.insert(
+                    "old".into(),
+                    Generation {
+                        name: "old".into(),
+                        state: "active".into(),
+                        backend,
+                        pid: None,
+                        managed: false,
+                        connections: 0,
+                        previous: None,
+                        start_error: None,
+                        launch: None,
+                    },
+                );
+                state_changed = true;
+            }
         }
         (None, None) => {}
         _ => return Err("--old-host 和 --old-port 必须同时提供".into()),
+    }
+    if state_changed {
+        let state = state.lock().await;
+        persist_state(&state, state_path.as_deref()).await?;
     }
     if control_path.exists() {
         tokio::fs::remove_file(&control_path).await?;
@@ -500,13 +1014,19 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let control_state = state.clone();
     let control_queue = Arc::new(Mutex::new(()));
+    let control_state_path = state_path.clone();
     let control_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => break,
                 accepted = control_listener.accept() => {
                     let Ok((socket, _)) = accepted else { break; };
-                    tokio::spawn(handle_control(socket, control_state.clone(), control_queue.clone()));
+                    tokio::spawn(handle_control(
+                        socket,
+                        control_state.clone(),
+                        control_queue.clone(),
+                        control_state_path.clone(),
+                    ));
                 }
             }
         }
@@ -530,10 +1050,10 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     while tasks.join_next().await.is_some() {}
     let state = state.lock().await;
     for generation in state.generations.values() {
-        if let Some(pid) = generation.pid {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
+        if generation.managed
+            && let Some(pid) = generation.pid
+        {
+            let _ = signal_process_group(pid, libc::SIGTERM);
         }
     }
     drop(state);

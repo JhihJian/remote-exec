@@ -158,7 +158,7 @@ impl Store {
         host_entry_from(name, entry)
     }
 
-    fn assert_available(
+    pub fn assert_available(
         &self,
         target: &Target,
         hosts: &Map<String, Value>,

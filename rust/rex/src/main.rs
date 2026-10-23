@@ -1,9 +1,14 @@
 //! rex：remote-exec Rust 客户端（交互与一次性操作）。
+mod bundle;
 mod client;
 mod config;
+mod deploy;
 mod http;
+mod prompt;
 mod smoke;
+mod ssh;
 mod ui;
+mod upgrade;
 
 use crate::client::{Call, Interrupt};
 use config::Store;
@@ -17,7 +22,11 @@ const HELP: &str = "用法: rex [主机名]                交互式会话（缺
   rex upload <主机> <本地> <远端>   流式上传（仅直连主机）
   rex download <主机> <远端> <本地> 流式下载（仅直连主机）
   rex smoke --port N --ca <pem> --token-file <f> [--expected-user 用户] [--host 地址]
-                                   安装验收（readyz + WSS exec）";
+                                   安装验收（readyz + WSS exec）
+  rex deploy [--port 8791] [--identity 私钥] [--package tar.gz] [--ssh-port 22] [--host-key 指纹] [name=]user@IPv4...
+                                   SSH 直连部署并登记主机
+  rex upgrade <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] [--identity 私钥] [--host-key 指纹] [--retire-wait-secs 300] [--rollback]
+                                   两段式升级目标 daemon（需可直连 SSH）";
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -73,6 +82,22 @@ fn main() {
             let rt = runtime();
             if let Err(e) = rt.block_on(transfer(&store, &args[1..], Direction::Read)) {
                 fail(&e);
+            }
+        }
+        "deploy" => {
+            let rt = runtime();
+            match rt.block_on(deploy::run(&store, &args[1..])) {
+                Ok(code) if code != 0 => std::process::exit(code),
+                Ok(_) => {}
+                Err(e) => fail(&e),
+            }
+        }
+        "upgrade" => {
+            let rt = runtime();
+            match rt.block_on(upgrade::run(&store, &args[1..])) {
+                Ok(code) if code != 0 => std::process::exit(code),
+                Ok(_) => {}
+                Err(e) => fail(&e),
             }
         }
         "smoke" => {
@@ -391,4 +416,14 @@ fn smoke_options(args: &[String]) -> Result<smoke::Options<'_>, String> {
 /// 参数字符串转 'static，避免生命周期传染（进程生命周期内有效）。
 fn leak_str(value: String) -> &'static str {
     Box::leak(value.into_boxed_str())
+}
+
+pub fn set_mode_600(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("设置 {} 权限失败: {e}", path.display()))?;
+    }
+    Ok(())
 }

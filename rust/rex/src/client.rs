@@ -54,6 +54,93 @@ async fn connect_tls(
     Ok(tls)
 }
 
+/// 钉住单张叶子证书的验证器：仅当服务端出示的证书与预置证书逐字节一致时通过。
+/// 用于部署验收——证书刚经 SSH root 通道取得，钉住即绑定信任，兼容自签叶子。
+#[derive(Debug)]
+struct PinnedVerifier {
+    cert_der: Vec<u8>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinnedVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls_pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls_pki_types::CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if end_entity.as_ref() == self.cert_der.as_slice() {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName,
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// 以钉住叶子证书建立 TLS 连接（不经 CA 验证）。cert_pem 必须恰好包含一张证书。
+async fn connect_tls_pinned(
+    host: &str,
+    port: u16,
+    servername: Option<&str>,
+    cert_pem: &str,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, AnyError> {
+    let mut reader = std::io::BufReader::new(cert_pem.as_bytes());
+    let mut certs = Vec::new();
+    for cert in rustls_pemfile::certs(&mut reader) {
+        certs.push(cert?);
+    }
+    if certs.len() != 1 {
+        return Err("钉住验证需要恰好一张叶子证书".into());
+    }
+    let config = Arc::new(
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PinnedVerifier {
+                cert_der: certs.remove(0).to_vec(),
+            }))
+            .with_no_client_auth(),
+    );
+    let name = servername.filter(|s| !s.is_empty()).unwrap_or(host);
+    let server_name = ServerName::try_from(name.to_owned())
+        .map_err(|e| format!("无效 servername \"{name}\": {e}"))?;
+    let tcp = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| format!("连接 {host}:{port} 超时"))??;
+    let connector = tokio_rustls::TlsConnector::from(config);
+    let tls = tokio::time::timeout(
+        Duration::from_secs(15),
+        connector.connect(server_name, tcp),
+    )
+    .await
+    .map_err(|_| format!("TLS 握手 {host}:{port} 超时"))??;
+    Ok(tls)
+}
+
 async fn wss_handshake(
     tls: tokio_rustls::client::TlsStream<TcpStream>,
     servername: &str,
@@ -187,6 +274,24 @@ pub async fn call_entry(
         .map_err(|e| e.to_string())?;
     let request = json!({"id": 1, "method": call.method, "params": call.params});
     drive(&mut ws, request, on_event, interrupt).await
+}
+
+/// 部署验收专用：钉住刚安装的叶子证书直连调用，不经 CA 验证。
+pub async fn call_entry_pinned(
+    entry: &HostEntry,
+    token: &str,
+    cert_pem: &str,
+    call: &Call,
+) -> Result<Value, String> {
+    let tls = connect_tls_pinned(&entry.host, entry.port, entry.servername.as_deref(), cert_pem)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (mut ws, _) = wss_handshake(tls, name_or(entry), token)
+        .await
+        .map_err(|e| e.to_string())?;
+    let request = json!({"id": 1, "method": call.method, "params": call.params});
+    let mut interrupt = Interrupt(None);
+    drive(&mut ws, request, None, &mut interrupt).await
 }
 
 /// 发送请求并驱动读循环：事件回调、终态返回。abort 时直接断开（丢弃 ws）。

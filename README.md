@@ -170,7 +170,7 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 
 ### rex（Rust，默认入口）
 
-rex 是 Rust 实现的操作客户端，交互会话与一次性子命令与 Node 版一致，直接复用 `~/.config/remote-exec/hosts.json` 与既有凭据；`rex deploy` 暂仍由 Node 承接（Phase 3b 迁移）。
+rex 是 Rust 实现的操作客户端，交互会话与一次性子命令与 Node 版一致，直接复用 `~/.config/remote-exec/hosts.json` 与既有凭据；deploy 与 upgrade 已由 rex 原生承接（russh 直连）。
 
 ```bash
 ./rex.sh                # 交互式会话（列出主机选择）

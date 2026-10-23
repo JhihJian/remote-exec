@@ -54,7 +54,7 @@
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
 | build-release + GitHub release | 完整（x64 Node 包，无体积门禁） | 原型构建（<2MB 门禁，x64+ARM64） | Phase 4 Rust 正式发布流程 |
-| 客户端分发 | rex.sh → node src/cli/main.js | rex.sh 已指向 rex 二进制（deploy 除外） | tarball 分发与 deploy 路由在 Phase 3b/5 收口 |
+| 客户端分发 | rex.sh → node src/cli/main.js | rex.sh 全部子命令指向 rex 二进制 | tarball 分发在 Phase 5 收口 |
 
 ### 2.6 生产机群事实（迁移对象盘点）
 
@@ -146,9 +146,11 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 
 进度（2026-10-23）：`rust/rex`（bin rex）交付，依赖 tokio-rustls/tokio-tungstenite/reqwest(rustls)/rustyline，不入 daemon 2MB 门禁。loopback 套件 `test/rust-prototype/phase3a.js` 14 项通过（一次性 exec/read/write、30MB upload/download 哈希、relay 信封、smoke、hosts 并行探测、交互管道 PWD 跟随与退出摘要、Node config-store 互读）；Rust 单测 3 项（register 格式与 Node 互通、幂等/端点冲突、指纹 key 格式）。dogfood：xiaomi 旁挂 Rust daemon（0.0.0.0:8792，jhihjian，注册名 xiaomi-rust）实机验证 exec/smoke/read/write/upload/download/交互全套；现有 hosts.json 全部 14 台直接可用（Node 旧证书主机报 CaUsedAsEndEntity，属预期，Phase 5 迁移时换新证书）。双架构 musl 静态构建通过（x86_64 2,646,928 / ARM64 2,232,568 字节，无体积门禁）。rex deploy 仍由 rex.sh 路由到 Node（Phase 3b 移除）。
 
-### Phase 3b：rex 部署与升级 UX
+### Phase 3b：rex 部署与升级 UX（已完成）
 范围：deploy 直连（russh：指纹、密码/密钥/agent、sudo、验收、登记、脱敏）；发布包下载（GitHub latest、断点续传、HTTPS-only）；upgrade 编排 UX（两段式 ctl 驱动）。
 退出条件：隔离环境直连部署测试通过；对试点主机完成一次真实 Rust↔Rust 无中断升级。
+
+进度（2026-10-23）：`rex deploy`/`rex upgrade` 交付（russh default-features=false + ring，仅 rex 依赖不入 daemon 2MB 门禁）。deploy：SSH 直连密钥/密码/agent 认证、指纹校验（known > --host-key > 交互确认）、sudo NOPASSWD/-S 路径、发布包本地/下载双源、验收（PinnedVerifier 钉住叶子证书，兼容自签与 CA 签发）、登记；upgrade：RawBundle sha256 校验、首装 bootstrap（解包 + 拉起 supervisor 单元 + 统一 ctl upgrade 建 generation）、两段式 retire、rollback 由 rex 同步 current 链接。隔离 E2E `test/rust-prototype/phase3b.js` 13 项通过（双容器 systemd/SSH：密钥/密码/错误密码/幂等/指纹拒绝/别名冲突/坏包/ops sudo/首装/零中断/回滚/坏包自动回滚）。实机验收（2026-10-23）：MACO → xiaomi docker privileged 容器（EasyTier 10.144.144.4，生产布局 CA+leaf+token+supervisor systemd 单元）完成 rex upgrade 首装 v1 → 持 WSS 连接零中断升级 v2（同连接持续可用）→ rollback 回 v1，全部通过后清理。发现并修复：CLI 选项在目标解析后统一合并（--port 任意顺序生效）、OpenSSH exit-status 在 EOF 后发送（channel 循环 Eof 不 break）、SFTP 需先 request_subsystem、ctl 输出多行 JSON 整体解析。rex.sh 不再路由 Node，deploy/upgrade 全部走 rex。Node 包自签叶子布局 rex 常规 CA 验证报 CaUsedAsEndEntity 属预期（deploy 验收用钉住验证），Phase 5 迁移统一换 CA+leaf。
 
 ### Phase 4：daemon deploy.ssh 与发布流程
 范围：daemon deploy.ssh（russh、SFTP、暂存上限与清理、网段校验、脱敏）；rex 网关部署 E2E；正式构建脚本与发布流程（双架构）；正式 install.sh（参数面 --address/--port/--run-user/--source、flock、幂等、凭据保留、OS 矩阵 x64+ARM64）；Node→Rust 迁移脚本（3.4 流程）。

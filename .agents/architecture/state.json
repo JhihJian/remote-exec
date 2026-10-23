@@ -253,7 +253,11 @@
         },
         {
           "path": "rex.sh",
-          "locator": "rex deploy 暂仍走 Node"
+          "locator": "全部子命令走 Rust 客户端（rust/rex）"
+        },
+        {
+          "path": "test/rust-prototype/phase3b.js",
+          "locator": "Phase 3b rex deploy/upgrade 端到端测试通过"
         }
       ]
     },
@@ -277,5 +281,6 @@
       ]
     }
   ],
-  "openQuestions": []
+  "openQuestions": [],
+  "updated": "2026-10-23"
 }

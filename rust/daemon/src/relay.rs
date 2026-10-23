@@ -73,7 +73,7 @@ fn allowed(ip: Ipv4Addr, cidr: &str) -> bool {
     ip & mask == base & mask
 }
 
-fn target_allowed(ip: Ipv4Addr, allow_list: &[String]) -> bool {
+pub(crate) fn target_allowed(ip: Ipv4Addr, allow_list: &[String]) -> bool {
     if allow_list.is_empty() {
         DEFAULT_ALLOW.iter().any(|cidr| allowed(ip, cidr))
     } else {

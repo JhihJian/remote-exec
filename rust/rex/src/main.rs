@@ -6,7 +6,7 @@ mod deploy;
 mod http;
 mod prompt;
 mod smoke;
-mod ssh;
+
 mod ui;
 mod upgrade;
 
@@ -182,17 +182,17 @@ async fn one_shot_exec(store: &Store, args: &[String]) -> Result<(), String> {
     let (host, command) = split_host_command(args)?;
     let mut interrupt = Interrupt(None);
     let started = std::time::Instant::now();
-    let cwd = store
-        .host(&host)
-        .ok()
-        .and_then(|entry| entry.cwd)
-        .unwrap_or_else(|| "/root".into());
+    // 未配置 cwd 时不发送该字段，daemon 用自身工作目录（runUser=remote-exec 无法访问 /root）。
+    let mut params = json!({"command": command, "timeoutMs": 300_000});
+    if let Some(cwd) = store.host(&host).ok().and_then(|entry| entry.cwd) {
+        params["cwd"] = serde_json::Value::from(cwd);
+    }
     let value = client::call_host(
         store,
         &host,
         &Call {
             method: "exec".into(),
-            params: json!({"command": command, "cwd": cwd, "timeoutMs": 300_000}),
+            params,
         },
         None,
         &mut interrupt,

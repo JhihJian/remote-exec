@@ -89,7 +89,7 @@ pub async fn run(store: &Store, initial: Option<String>) -> Result<(), String> {
     let names: Vec<String> = hosts.keys().cloned().collect();
     let mut state = State {
         host: String::new(),
-        cwd: "/root".into(),
+        cwd: String::new(),
         timeout_ms: 300_000,
         commands: 0,
         started: Instant::now(),
@@ -104,7 +104,7 @@ pub async fn run(store: &Store, initial: Option<String>) -> Result<(), String> {
             ));
         }
         state.host = name;
-        state.cwd = config_host_cwd(&hosts, &state.host);
+        state.cwd = config_host_cwd(&hosts, &state.host).unwrap_or_default();
     } else {
         picking = true;
         println!("可用主机:");
@@ -159,7 +159,7 @@ pub async fn run(store: &Store, initial: Option<String>) -> Result<(), String> {
                 break;
             };
             state.host = name;
-            state.cwd = config_host_cwd(&hosts, &state.host);
+            state.cwd = config_host_cwd(&hosts, &state.host).unwrap_or_default();
             print_banner(&hosts, &state.host);
             continue;
         }
@@ -190,13 +190,21 @@ pub async fn run(store: &Store, initial: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-fn config_host_cwd(hosts: &serde_json::Map<String, Value>, name: &str) -> String {
+fn config_host_cwd(hosts: &serde_json::Map<String, Value>, name: &str) -> Option<String> {
     hosts
         .get(name)
         .and_then(|h| h.get("cwd"))
         .and_then(Value::as_str)
-        .unwrap_or("/root")
-        .to_owned()
+        .map(str::to_owned)
+}
+
+/// exec 参数：未确定 cwd 时省略该字段，由 daemon 使用自身可访问的工作目录。
+fn exec_params(command: String, cwd: &str, timeout_ms: u64) -> Value {
+    let mut params = json!({"command": command, "timeoutMs": timeout_ms});
+    if !cwd.is_empty() {
+        params["cwd"] = Value::from(cwd);
+    }
+    params
 }
 
 fn print_banner(hosts: &serde_json::Map<String, Value>, name: &str) {
@@ -264,13 +272,13 @@ async fn session_command(store: &Store, state: &mut State, line: &str) -> Result
                 );
                 return Ok(true);
             }
-            let cwd = config_host_cwd(&hosts, &arg);
+            let configured = config_host_cwd(&hosts, &arg);
             let result = interrupted_call(
                 store,
                 &arg,
                 &Call {
                     method: "exec".into(),
-                    params: json!({"command": "pwd", "cwd": cwd, "timeoutMs": 15000}),
+                    params: exec_params("pwd".into(), configured.as_deref().unwrap_or(""), 15000),
                 },
                 false,
             )
@@ -280,7 +288,11 @@ async fn session_command(store: &Store, state: &mut State, line: &str) -> Result
                     let stdout = decode_b64(&value, "stdoutB64");
                     let output = String::from_utf8_lossy(&stdout);
                     let trimmed = output.trim();
-                    state.cwd = if trimmed.is_empty() { cwd } else { trimmed.to_owned() };
+                    state.cwd = if trimmed.is_empty() {
+                        configured.unwrap_or_default()
+                    } else {
+                        trimmed.to_owned()
+                    };
                     state.host = arg.clone();
                     let entry = &hosts[&arg];
                     let via = entry
@@ -302,7 +314,7 @@ async fn session_command(store: &Store, state: &mut State, line: &str) -> Result
         }
         "cd" => {
             if arg.is_empty() {
-                state.cwd = "/root".into();
+                state.cwd = String::new();
                 return Ok(true);
             }
             let quoted = serde_json::to_string(&arg).unwrap_or_else(|_| arg.clone());
@@ -311,7 +323,7 @@ async fn session_command(store: &Store, state: &mut State, line: &str) -> Result
                 &state.host,
                 &Call {
                     method: "exec".into(),
-                    params: json!({"command": format!("cd {quoted} && pwd"), "cwd": state.cwd, "timeoutMs": 15000}),
+                    params: exec_params(format!("cd {quoted} && pwd"), &state.cwd, 15000),
                 },
                 false,
             )
@@ -354,7 +366,7 @@ async fn session_command(store: &Store, state: &mut State, line: &str) -> Result
                 &state.host,
                 &Call {
                     method: "exec.stream".into(),
-                    params: json!({"command": arg, "cwd": state.cwd, "timeoutMs": state.timeout_ms}),
+                    params: exec_params(arg, &state.cwd, state.timeout_ms),
                 },
                 true,
             )
@@ -378,7 +390,7 @@ async fn run_exec(store: &Store, state: &mut State, line: &str) -> Result<(), St
         &state.host,
         &Call {
             method: "exec".into(),
-            params: json!({"command": wrapped, "cwd": state.cwd, "timeoutMs": state.timeout_ms}),
+            params: exec_params(wrapped, &state.cwd, state.timeout_ms),
         },
         false,
     )

@@ -5,7 +5,7 @@
 use crate::bundle;
 use crate::config::{self, Store};
 use crate::prompt;
-use crate::ssh::{self, Target as SshTarget};
+use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -61,7 +61,12 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
                     return Err("ssh-port 必须为 1..65535".into());
                 }
             }
-            "--identity" => identity = Some(value(&mut index)?),
+            "--identity" => {
+                let path = value(&mut index)?;
+                let pem = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("读取私钥 {path} 失败: {e}"))?;
+                identity = Some(pem);
+            }
             "--host-key" => host_key = Some(value(&mut index)?),
             "--retire-wait-secs" => {
                 retire_wait = value(&mut index)?
@@ -355,7 +360,7 @@ async fn try_upgrade(
     use sha2::Digest;
     let sha256 = sha2::Sha256::digest(&package_data);
     let sha256 = sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    ssh::upload_file(
+    ssh::upload_bytes(
         session,
         &format!("{staging_path}/package.tar.gz"),
         &package_data,

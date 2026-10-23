@@ -11,7 +11,18 @@ const { stdin, stdout } = require("process");
 const { loadConfig, callHost, callHostStream } = require("../client/index.js");
 
 const args = process.argv.slice(2);
-const state = { host: null, cwd: "/root", timeoutMs: 300000 };
+// cwd 为空串表示未确定：请求省略 cwd 字段，由 daemon 使用自身工作目录。
+const state = { host: null, cwd: "", timeoutMs: 300000 };
+
+// exec 参数：cwd 未确定时省略该字段（runUser=remote-exec 的 daemon 无法访问 /root）。
+function execParams(command, timeoutMs) {
+  const params = { command, timeoutMs };
+  if (state.cwd) params.cwd = state.cwd;
+  return params;
+}
+function configuredCwd(hosts, name) {
+  return (hosts[name] && hosts[name].cwd) || "";
+}
 
 const cyan = (s) => `\x1b[36m${s}\x1b[0m`;
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
@@ -62,9 +73,7 @@ async function runCommand(line) {
   let r;
   try {
     r = await interruptible(
-      callHost(state.host, "exec", {
-        command: wrapped, cwd: state.cwd, timeoutMs: state.timeoutMs,
-      }, (abort) => {
+      callHost(state.host, "exec", execParams(wrapped, state.timeoutMs), (abort) => {
         // Ctrl+C：断开连接，服务端检测断连终止远端子进程
         interruptible.abortNow = abort;
       }),
@@ -114,7 +123,7 @@ async function runFollowCommand(command) {
       callHostStream(
         state.host,
         "exec.stream",
-        { command, cwd: state.cwd, timeoutMs: state.timeoutMs },
+        execParams(command, state.timeoutMs),
         (event) => {
           const data = Buffer.from(event.dataB64, "base64");
           wroteOutput = wroteOutput || data.length > 0;
@@ -169,9 +178,12 @@ async function handleSessionCmd(line) {
       if (!hosts[arg]) { console.log(red(`未知主机 ${arg}，可用: ${Object.keys(hosts).join(", ")}`)); return "ok"; }
       // 连通性验证 + 取真实 cwd
       try {
-        const r = await callHost(arg, "exec", { command: "pwd", cwd: hosts[arg].cwd || "/root", timeoutMs: 15000 });
+        const configured = hosts[arg].cwd;
+        const probe = { command: "pwd", timeoutMs: 15000 };
+        if (configured) probe.cwd = configured;
+        const r = await callHost(arg, "exec", probe);
         state.host = arg;
-        state.cwd = Buffer.from(r.stdoutB64, "base64").toString().trim() || "/root";
+        state.cwd = Buffer.from(r.stdoutB64, "base64").toString().trim() || configured || "";
         console.log(dim(`已连接 ${arg}（${hosts[arg].host}:${hosts[arg].port}${hosts[arg].via ? `，经 ${hosts[arg].via} relay` : ""}）`));
       } catch (e) {
         console.log(red(`连接 ${arg} 失败: ${e.message}`));
@@ -179,8 +191,10 @@ async function handleSessionCmd(line) {
       return "ok";
     }
     case "cd": {
-      if (!arg) { state.cwd = "/root"; return "ok"; }
-      const r = await callHost(state.host, "exec", { command: `cd ${JSON.stringify(arg)} && pwd`, cwd: state.cwd, timeoutMs: 15000 });
+      if (!arg) { state.cwd = ""; return "ok"; }
+      const cdParams = { command: `cd ${JSON.stringify(arg)} && pwd`, timeoutMs: 15000 };
+      if (state.cwd) cdParams.cwd = state.cwd;
+      const r = await callHost(state.host, "exec", cdParams);
       if (r.exitCode !== 0) {
         console.log(red(Buffer.from(r.stderrB64, "base64").toString("utf8").trim() || `cd 失败 exit=${r.exitCode}`));
       } else {
@@ -226,7 +240,7 @@ async function main() {
     stdout.write("选择序号或主机名（默认 1）: ");
   } else {
     state.host = name;
-    state.cwd = hosts[name].cwd || "/root";
+    state.cwd = configuredCwd(hosts, name);
     console.log(`remote-exec TUI → ${name} ${dim(`${hosts[name].host}:${hosts[name].port}${hosts[name].via ? `（经 ${hosts[name].via} relay）` : ""}，:h 帮助，:q 退出`)}`);
   }
 
@@ -250,7 +264,7 @@ async function main() {
       else if (/^\d+$/.test(t) && names[parseInt(t, 10) - 1]) n = names[parseInt(t, 10) - 1];
       if (!n) { console.log(red("无效选择")); process.exit(1); }
       state.host = n;
-      state.cwd = hosts[n].cwd || "/root";
+      state.cwd = configuredCwd(hosts, n);
       console.log(`remote-exec TUI → ${n} ${dim(`${hosts[n].host}:${hosts[n].port}${hosts[n].via ? `（经 ${hosts[n].via} relay）` : ""}，:h 帮助，:q 退出`)}`);
       rl.setPrompt(prompt());
       rl.prompt();

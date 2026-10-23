@@ -26,6 +26,7 @@ pub struct Target {
     pub ssh_port: u16,
     pub username: String,
     pub fingerprint: Option<String>,
+    /// 私钥 PEM 内容。网关模式下客户端无法传路径，统一由调用方读文件后传内容。
     pub identity: Option<String>,
     pub password: Option<String>,
     pub sudo_password: Option<String>,
@@ -141,18 +142,15 @@ pub async fn connect(target: &Target) -> Result<Session, String> {
         };
     }
 
-    if let Some(identity) = &target.identity {
-        let key = load_key(identity)?;
+    if let Some(pem) = &target.identity {
+        let key = load_key(pem)?;
         let with_hash = PrivateKeyWithHashAlg::new(
-            Arc::new(key),
-            rsa_hash_alg(identity),
+            Arc::new(key.clone()),
+            rsa_hash_alg(&key),
         );
         return match session.authenticate_publickey(user, with_hash).await {
             Ok(AuthResult::Success) => Ok(session),
-            Ok(_) => Err(format!(
-                "{AUTH_REQUIRED}: 私钥认证失败 {}（identity={}）",
-                user, identity
-            )),
+            Ok(_) => Err(format!("{AUTH_REQUIRED}: 私钥认证失败 {user}")),
             Err(e) => Err(format!("SSH 私钥认证错误: {e}")),
         };
     }
@@ -185,12 +183,12 @@ pub async fn connect(target: &Target) -> Result<Session, String> {
         if !path.exists() {
             continue;
         }
-        let Ok(key) = load_key(&path.to_string_lossy()) else {
+        let Ok(key) = russh::keys::load_secret_key(&path, None) else {
             continue;
         };
         let with_hash = PrivateKeyWithHashAlg::new(
-            Arc::new(key),
-            rsa_hash_alg(&path.to_string_lossy()),
+            Arc::new(key.clone()),
+            rsa_hash_alg(&key),
         );
         if let Ok(AuthResult::Success) = session
             .authenticate_publickey(user, with_hash)
@@ -206,16 +204,22 @@ pub async fn connect(target: &Target) -> Result<Session, String> {
     ))
 }
 
-fn load_key(path: &str) -> Result<russh::keys::PrivateKey, String> {
-    russh::keys::load_secret_key(path, None)
-        .map_err(|e| format!("读取私钥 {path} 失败: {e}"))
+fn load_key(pem: &str) -> Result<russh::keys::PrivateKey, String> {
+    russh::keys::decode_secret_key(pem, None)
+        .map_err(|_| "解析私钥 PEM 失败".to_owned())
+}
+
+/// 主机指纹格式校验：SHA256: 前缀 + 43 位 base64 字符（不含填充）。
+pub fn valid_fingerprint(fingerprint: &str) -> bool {
+    fingerprint.len() == 50
+        && fingerprint.starts_with("SHA256:")
+        && fingerprint[7..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
 }
 
 /// RSA 私钥一律走 SHA-2，避免服务器拒绝 ssh-rsa(SHA-1)。
-fn rsa_hash_alg(path: &str) -> Option<HashAlg> {
-    let Ok(key) = load_key(path) else {
-        return None;
-    };
+fn rsa_hash_alg(key: &russh::keys::PrivateKey) -> Option<HashAlg> {
     match key.algorithm() {
         russh::keys::Algorithm::Rsa { .. } => Some(HashAlg::Sha256),
         _ => None,
@@ -370,8 +374,8 @@ async fn run_with_prefix(
     })
 }
 
-/// SFTP 上传单文件（0600），目标路径需已存在父目录。
-pub async fn upload_file(
+/// SFTP 上传字节到远端文件（0600），目标路径需已存在父目录。
+pub async fn upload_bytes(
     session: &Session,
     remote_path: &str,
     data: &[u8],

@@ -9,6 +9,7 @@ name = "remote-execd"
 path = "src/main.rs"
 
 [dependencies]
+remote-exec-ssh = { path = "../ssh" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -16,6 +17,7 @@ http-body-util = { version = "0.1", default-features = false }
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 libc = { version = "0.2", default-features = false }
+rand = { version = "0.9", default-features = false, features = ["std"] }
 rustls-pemfile = { version = "2", default-features = false, features = ["std"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }

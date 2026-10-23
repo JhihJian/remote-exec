@@ -1,0 +1,12 @@
+[package]
+name = "remote-exec-ssh"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+russh = { version = "0.64", default-features = false, features = ["flate2", "ring"] }
+russh-sftp = "3"
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }

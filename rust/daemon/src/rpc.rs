@@ -177,7 +177,7 @@ async fn dispatch(
         .ok_or_else(|| RpcError::new(-32600, "请求需要 method 字段"))?;
     if !matches!(
         method,
-        "exec" | "exec.stream" | "file.read" | "file.write" | "relay"
+        "exec" | "exec.stream" | "file.read" | "file.write" | "relay" | "deploy.ssh"
     ) {
         return Err(RpcError::new(-32601, format!("未知方法: {method}")));
     }
@@ -191,6 +191,7 @@ async fn dispatch(
         "file.read" => crate::files::read(params).await,
         "file.write" => crate::files::write(params).await,
         "relay" => crate::relay::request(params, id, out, cancel, relay_allow).await,
+        "deploy.ssh" => crate::deploy::run(params, id, out, cancel, relay_allow).await,
         _ => Err(RpcError::new(-32601, format!("未知方法: {method}"))),
     }
 }

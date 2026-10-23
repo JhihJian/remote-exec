@@ -13,120 +13,26 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn, execFile } = require("node:child_process");
-const { promisify } = require("node:util");
-const exec = promisify(execFile);
-
-const root = path.resolve(__dirname, "../..");
-const image = process.env.DEPLOY_TEST_IMAGE || "remote-exec-deploy:test";
-const rex = process.env.REX_BINARY || path.join(root,
-  "rust/target/x86_64-unknown-linux-musl/release/rex");
-const daemonBinary = process.env.RUST_PROTOTYPE_BINARY || path.join(root,
-  "rust/target/x86_64-unknown-linux-musl/release/remote-execd");
-const nodePackage = process.env.INSTALL_PACKAGE || path.join(root, "dist/remote-exec-linux-x64.tar.gz");
+const { spawn } = require("node:child_process");
 const { WssClient } = require("../../src/client/websocket.js");
 const { createStore } = require("../../src/deploy/config-store.js");
+const { createHarness, root, image, rex, daemonBinary, nodePackage } = require("./helpers.js");
 
-const sha = (data) => crypto.createHash("sha256").update(data).digest("hex");
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const secrets = [];
-function redact(text) {
-  let result = String(text);
-  for (const secret of secrets) if (secret) result = result.split(secret).join("[已隐藏]");
-  return result;
-}
-async function command(file, args, options = {}) {
-  try {
-    return await exec(file, args, { timeout: 120000, maxBuffer: 8 * 1024 * 1024, ...options });
-  } catch (error) {
-    throw new Error(redact(`${file} 失败: ${error.stderr || error.message}`));
-  }
-}
-const docker = (args, options) => command("docker", args, options);
-async function until(check, description, timeout = 90000) {
-  const deadline = Date.now() + timeout;
-  let last;
-  while (Date.now() < deadline) {
-    try { return await check(); } catch (error) { last = error; }
-    await sleep(250);
-  }
-  throw new Error(`${description} 超时: ${last?.message || "未就绪"}`);
-}
-function privateFile(file, text) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, text, { mode: 0o600 });
-}
-function rexEnv(configDir, extra = {}) {
-  return {
-    ...process.env,
-    HOME: configDir,
-    REX_CONFIG_DIR: path.join(configDir, ".config/remote-exec"),
-    ...Object.fromEntries(Object.entries(extra).map(([key, value]) => [key, value])),
-  };
-}
-// 真实二进制调用。stdout/stderr 合并便于断言错误消息。
-function rexRun(configDir, args, options = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(rex, args, { env: rexEnv(configDir), ...options });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", (error) => resolve({ code: -1, stdout, stderr: `${stderr}${error}` }));
-    child.once("close", (code) => resolve({ code, stdout, stderr }));
-  });
-}
-// 用 script(1) 伪终端喂 rpassword：stdin 依次回答 SSH 密码/sudo 密码提示。
-function rexRunPty(configDir, args, answers, timeoutMs = 240000) {
-  return new Promise((resolve) => {
-    const child = spawn("script", ["-qec",
-      [rex, ...args].map((part) => `'${String(part).replace(/'/g, `'\\''`)}'`).join(" "),
-      "/dev/null"],
-    { env: rexEnv(configDir), stdio: ["pipe", "pipe", "pipe"] });
-    let output = "";
-    const feed = setTimeout(() => {
-      for (const answer of answers) child.stdin.write(`${answer}\n`);
-    }, 400);
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.stdout.on("data", (chunk) => { output += chunk; });
-    child.stderr.on("data", (chunk) => { output += chunk; });
-    child.once("close", (code) => {
-      clearTimeout(feed);
-      clearTimeout(timer);
-      resolve({ code, output });
-    });
-  });
-}
-async function containerIp(container, network) {
-  const { stdout } = await docker(["inspect", "--format",
-    `{{(index .NetworkSettings.Networks "${network}").IPAddress}}`, container]);
-  return stdout.trim();
-}
-async function fingerprintOf(host, port = 22) {
-  const { stdout } = await command("ssh-keyscan", ["-p", String(port), "-T", "5", "-t", "ed25519", host]);
-  const first = stdout.split("\n").find((line) => line && !line.startsWith("#"));
-  assert.ok(first, `ssh-keyscan 无输出: ${host}`);
-  const { stdout: fp } = await command("bash", ["-c", `printf '%s\n' '${first.replace(/'/g, `'\\''`)}' | ssh-keygen -lf -`]);
-  return fp;
-}
-async function setPasswords(container, rootPassword, opsPassword) {
-  await new Promise((resolve, reject) => {
-    const child = spawn("docker", ["exec", "-i", container, "chpasswd"], { stdio: ["pipe", "ignore", "pipe"] });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(redact(`设置测试密码失败: ${stderr}`))));
-    child.stdin.end(`root:${rootPassword}\nops:${opsPassword}\n`);
-  });
-}
+const {
+  secrets, redact, command, docker, until, privateFile, rexRun, rexRunPty,
+  containerIp, fingerprintOf, setPasswords, makeIdentity, leafCertificate, sha,
+} = createHarness();
+
+// 部署后 exec 验收：marker + 服务用户 + 当前 marker 文件。
 async function checkExec(configDir, name, expectedUser = "remote-exec") {
   const marker = crypto.randomBytes(12).toString("hex");
   const result = await rexRun(configDir, ["exec", name, "--",
-    `printf '${marker}\\n'; id -un; cat /opt/remote-exec/current/marker 2>/dev/null || echo nomarker`]);
+    `printf '${marker}\n'; id -un; cat /opt/remote-exec/current/marker 2>/dev/null || echo nomarker`]);
   assert.equal(result.code, 0, redact(result.stdout + result.stderr));
-  assert.match(result.stdout, new RegExp(`^${marker}\\n${expectedUser}\\n`));
+  assert.match(result.stdout, new RegExp(`^${marker}\n${expectedUser}\n`));
   return result.stdout;
 }
+
 // 打一个 Rust 升级包：bin/remote-execd + marker。
 async function rustPackage(dir, marker, binary) {
   const stage = path.join(dir, `pkg-${marker}`);
@@ -139,36 +45,6 @@ async function rustPackage(dir, marker, binary) {
   fs.writeFileSync(`${archive}.sha256`, `${sha(fs.readFileSync(archive))}  remote-exec-rust-${marker}.tar.gz\n`);
   return archive;
 }
-function makeIdentity(dir, name) {
-  fs.mkdirSync(dir, { recursive: true });
-  const token = crypto.randomBytes(32).toString("hex");
-  fs.writeFileSync(path.join(dir, "token.sha256"), sha(token));
-  privateFile(path.join(dir, "token"), token);
-  const args = ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
-    "-keyout", path.join(dir, "ca.key"), "-out", path.join(dir, "ca.crt"),
-    "-subj", `/CN=${name} CA`, "-addext", "basicConstraints=critical,CA:TRUE",
-    "-addext", "keyUsage=critical,keyCertSign,cRLSign"];
-  execFileSyncSync("openssl", args);
-  return { token, ca: path.join(dir, "ca.crt"), caKey: path.join(dir, "ca.key") };
-}
-function execFileSyncSync(file, args) {
-  const result = require("node:child_process").spawnSync(file, args, { timeout: 30000 });
-  assert.equal(result.status, 0, `${file} 失败: ${result.stderr}`);
-}
-function leafCertificate(dir, ca, caKey, hostname) {
-  const csr = path.join(dir, "server.csr");
-  const key = path.join(dir, "server.key");
-  const crt = path.join(dir, "server.crt");
-  const ext = path.join(dir, "server.ext");
-  execFileSyncSync("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", key, "-out", csr, "-subj", "/CN=remote-exec"]);
-  const ip = /^\d+\.\d+\.\d+\.\d+$/.test(hostname);
-  fs.writeFileSync(ext, `basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost,IP:127.0.0.1,${ip ? `IP:${hostname}` : `DNS:${hostname}`}\n`);
-  execFileSyncSync("openssl", ["x509", "-req", "-days", "365", "-in", csr,
-    "-CA", ca, "-CAkey", caKey, "-CAcreateserial", "-out", crt, "-extfile", ext]);
-  return { key, crt };
-}
-
 async function main() {
   for (const file of [rex, daemonBinary, nodePackage, `${nodePackage}.sha256`]) {
     assert.ok(fs.existsSync(file), `缺少 ${file}。请先构建 rust musl 产物或设置环境变量。`);

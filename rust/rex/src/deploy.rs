@@ -1,15 +1,19 @@
-//! rex deploy：SSH 直连部署 Node 发布包（russh 移植 src/deploy/{cli,ssh}.js）。
-//! --via 网关部署属 Phase 4；本子命令只做直连。
+//! rex deploy：SSH 部署（直连 russh 或 --via 网关 deploy.ssh RPC，语义对齐 src/deploy/cli.js）。
 use crate::bundle;
 use crate::config::{self, Credentials, Store};
 use crate::prompt;
-use crate::ssh::{self, Target as SshTarget};
+use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-const HELP: &str = "用法: rex deploy [--port 8791] [--identity 私钥路径] [--package tar.gz] \
+const HELP: &str = "用法: rex deploy [--via 网关名] [--port 8791] [--identity 私钥路径] [--package tar.gz] \
 [--ssh-port 22] [--host-key SHA256:...] [name=]user@IPv4 ...";
+
+/// 部署输出转录上限，超限整体丢弃只保留截断提示。
+const TRANSCRIPT_LIMIT: usize = 1024 * 1024;
+/// SSH/sudo 密码重试次数上限。
+const MAX_AUTH_ATTEMPTS: i32 = 3;
 
 struct DeployTarget {
     name: String,
@@ -20,6 +24,7 @@ struct DeployTarget {
 }
 
 struct Options {
+    via: Option<String>,
     port: u16,
     ssh_port: u16,
     identity: Option<String>,
@@ -41,6 +46,7 @@ fn is_ipv4(text: &str) -> bool {
 
 fn parse_options(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
+        via: None,
         port: 8791,
         ssh_port: 22,
         identity: None,
@@ -66,9 +72,7 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         };
         match arg {
             "--help" | "-h" => return Err(format!("{HELP}\n")),
-            "--via" => {
-                return Err("rex deploy 暂不支持 --via 网关部署（Phase 4 支持），请直连部署".into())
-            }
+            "--via" => options.via = Some(take("via")?),
             "--port" => {
                 let value = take("port")?;
                 options.port = value
@@ -143,15 +147,10 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         target.port = options.port;
         target.ssh_port = options.ssh_port;
     }
-    if let Some(host_key) = &options.host_key {
-        let valid = host_key.starts_with("SHA256:")
-            && host_key.len() == 50
-            && host_key[7..]
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/');
-        if !valid || options.targets.len() != 1 {
-            return Err("--host-key 需要 SHA256 指纹且仅支持单目标".into());
-        }
+    if let Some(host_key) = &options.host_key
+        && (!ssh::valid_fingerprint(host_key) || options.targets.len() != 1)
+    {
+        return Err("--host-key 需要 SHA256 指纹且仅支持单目标".into());
     }
     let mut names = std::collections::HashSet::new();
     let mut endpoints = std::collections::HashSet::new();
@@ -168,6 +167,53 @@ struct InstallOutput {
     certificate: String,
     version: String,
     run_user: String,
+}
+
+impl InstallOutput {
+    fn is_valid(&self) -> bool {
+        !self.token.is_empty() && self.certificate.contains("BEGIN CERTIFICATE")
+    }
+
+    /// 解析 deploy.ssh install 响应。
+    fn from_rpc(value: &Value) -> Result<Self, String> {
+        let output = Self {
+            token: value.get("token").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            certificate: value.get("certificate").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            version: value.get("version").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            run_user: value.get("runUser").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        };
+        if output.is_valid() {
+            Ok(output)
+        } else {
+            Err("安装未返回有效连接凭据".into())
+        }
+    }
+}
+
+/// 部署输出转录：直连与网关路径共用，超限整体截断。
+struct Transcript {
+    text: String,
+    truncated: bool,
+}
+
+impl Transcript {
+    fn new() -> Self {
+        Self { text: String::new(), truncated: false }
+    }
+
+    fn push(&mut self, stderr: bool, data: &[u8]) {
+        if self.truncated {
+            return;
+        }
+        let chunk = String::from_utf8_lossy(data);
+        if self.text.len() + chunk.len() > TRANSCRIPT_LIMIT {
+            self.text.clear();
+            self.truncated = true;
+            return;
+        }
+        self.text.push_str(&chunk);
+        let _ = stderr;
+    }
 }
 
 /// 单目标安装：上传三件套并执行 install.sh，读回接入资料。
@@ -273,7 +319,7 @@ async fn install_steps(
         (&files.installer, "install.sh"),
     ] {
         let data = std::fs::read(local).map_err(|e| format!("读取 {local:?} 失败: {e}"))?;
-        ssh::upload_file(session, &format!("{staging_path}/{remote}"), &data).await?;
+        ssh::upload_bytes(session, &format!("{staging_path}/{remote}"), &data).await?;
     }
     let install = ssh::exec(
         session,
@@ -369,10 +415,7 @@ async fn verify_target(
     if !matches!(credentials.run_user.as_str(), "root" | "remote-exec") {
         return Err("安装返回了未知服务身份".into());
     }
-    let marker = format!(
-        "rex-deploy-{}",
-        hex_random()
-    );
+    let marker = format!("rex-deploy-{}", marker_hex());
     let entry = config::HostEntry {
         host: target.host.clone(),
         port: target.port,
@@ -397,37 +440,218 @@ async fn verify_target(
     .await
     .map_err(|_| "daemon 验收超时".to_owned())?
     .map_err(|e| format!("daemon 验收失败: {e}"))?;
-    use base64::Engine;
-    let stdout = result
-        .get("stdoutB64")
-        .and_then(Value::as_str)
-        .map(|s| {
-            base64::engine::general_purpose::STANDARD
-                .decode(s)
-                .unwrap_or_default()
-        })
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default();
+    let stdout = decode_stdout(&result);
     let exit = result.get("exitCode").and_then(Value::as_i64).unwrap_or(-1);
-    let expected = format!("\n{marker}\n{}", credentials.run_user);
-    if exit != 0 || !stdout.trim_end().ends_with(&expected) {
-        return Err("daemon 验收输出或执行用户不匹配".into());
-    }
-    Ok(())
+    verify_reply(&stdout, exit, &marker, &credentials.run_user)
 }
 
-fn hex_random() -> String {
-    use sha2::{Digest, Sha256};
-    let seed = format!(
-        "{}{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    let digest = Sha256::digest(seed.as_bytes());
-    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+/// 网关部署会话：封装 deploy.ssh RPC 编排与网关侧暂存生命周期。
+struct GatewayDeploy {
+    name: String,
+    entry: config::HostEntry,
+    /// 网关暂存标识；首次 install 前惰性 prepare。
+    prepared: Option<String>,
+}
+
+impl GatewayDeploy {
+    fn resolve(store: &Store, name: &str) -> Result<Self, String> {
+        let entry = store.host(name).map_err(|e| e.to_string())?;
+        if entry.via.is_some() {
+            return Err("via 仅支持单跳，网关自身不得设置 via".into());
+        }
+        std::fs::read_to_string(&entry.ca)
+            .map_err(|e| format!("读取 CA 失败 {}: {e}", entry.ca))?;
+        std::fs::read_to_string(&entry.token_file)
+            .map_err(|e| format!("读取 token 失败 {}: {e}", entry.token_file))?;
+        Ok(Self { name: name.to_owned(), entry, prepared: None })
+    }
+
+    async fn call(
+        &self,
+        store: &Store,
+        params: Value,
+        on_event: Option<&mut (dyn FnMut(crate::client::StreamEvent) + Send)>,
+    ) -> Result<Value, String> {
+        let call = crate::client::Call {
+            method: "deploy.ssh".into(),
+            params,
+        };
+        let mut interrupt = crate::client::Interrupt(None);
+        crate::client::call_host(store, &self.name, &call, on_event, &mut interrupt).await
+    }
+
+    /// 经网关探测目标 SSH 指纹。
+    async fn inspect(&self, store: &Store, target: &DeployTarget) -> Result<String, String> {
+        let inspected = self
+            .call(
+                store,
+                serde_json::json!({
+                    "action": "inspect",
+                    "target": {"host": target.host, "sshPort": target.ssh_port},
+                }),
+                None,
+            )
+            .await?;
+        Ok(inspected
+            .get("fingerprint")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned())
+    }
+
+    /// 网关暂存 + 三件套上传（仅首次）。
+    async fn ensure_prepared(&mut self, store: &Store, bundle: &bundle::Bundle) -> Result<(), String> {
+        if self.prepared.is_some() {
+            return Ok(());
+        }
+        let staged = self
+            .call(store, serde_json::json!({"action": "prepare"}), None)
+            .await?;
+        let id = staged.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let files = staged.get("files").cloned().unwrap_or(Value::Null);
+        if id.is_empty() || !files.is_object() {
+            return Err("网关暂存准备失败".into());
+        }
+        let ca = std::fs::read_to_string(&self.entry.ca)
+            .map_err(|e| format!("读取 CA 失败: {e}"))?;
+        let token = std::fs::read_to_string(&self.entry.token_file)
+            .map_err(|e| format!("读取 token 失败: {e}"))?
+            .trim()
+            .to_owned();
+        for (local, kind) in [
+            (bundle.package.as_path(), "package"),
+            (bundle.checksum.as_path(), "checksum"),
+            (bundle.installer.as_path(), "installer"),
+        ] {
+            let remote = files.get(kind).and_then(Value::as_str).unwrap_or_default();
+            if remote.is_empty() {
+                return Err("网关暂存路径无效".into());
+            }
+            crate::http::upload(&self.entry, &ca, &token, local, remote).await?;
+        }
+        self.prepared = Some(id);
+        Ok(())
+    }
+
+    /// 经网关执行安装 RPC；identity 为私钥 PEM 内容。
+    #[allow(clippy::too_many_arguments)]
+    async fn install(
+        &self,
+        store: &Store,
+        target: &DeployTarget,
+        fingerprint: &str,
+        identity: Option<&str>,
+        password: Option<&str>,
+        sudo_password: Option<&str>,
+        on_output: Option<&mut (dyn FnMut(crate::client::StreamEvent) + Send)>,
+    ) -> Result<InstallOutput, String> {
+        let staging_id = self.prepared.clone().unwrap_or_default();
+        let mut install_target = serde_json::json!({
+            "host": target.host,
+            "sshPort": target.ssh_port,
+            "username": target.username,
+            "fingerprint": fingerprint,
+            "port": target.port,
+            "runUser": "remote-exec",
+        });
+        if let Some(pem) = identity {
+            install_target["identity"] = serde_json::json!(pem);
+        }
+        if let Some(secret) = password {
+            install_target["password"] = serde_json::json!(secret);
+        }
+        if let Some(secret) = sudo_password {
+            install_target["sudoPassword"] = serde_json::json!(secret);
+        }
+        let value = self
+            .call(
+                store,
+                serde_json::json!({"action": "install", "id": staging_id, "target": install_target}),
+                on_output,
+            )
+            .await?;
+        InstallOutput::from_rpc(&value)
+    }
+
+    /// 经网关 relay 信封验收新部署主机（凭据为安装返回的 token+证书）。
+    async fn verify(
+        &self,
+        store: &Store,
+        target: &DeployTarget,
+        credentials: &InstallOutput,
+    ) -> Result<(), String> {
+        if !matches!(credentials.run_user.as_str(), "root" | "remote-exec") {
+            return Err("安装返回了未知服务身份".into());
+        }
+        let marker = format!("rex-deploy-{}", marker_hex());
+        let envelope = serde_json::json!({
+            "target": {"host": target.host, "port": target.port},
+            "auth": {"token": credentials.token, "ca": credentials.certificate},
+            "request": {"method": "exec", "params": {
+                "command": format!("printf '\\n{marker}\\n'; id -un"),
+                "timeoutMs": 5000,
+            }},
+            "timeoutMs": 10000,
+        });
+        let call = crate::client::Call {
+            method: "relay".into(),
+            params: envelope,
+        };
+        let mut interrupt = crate::client::Interrupt(None);
+        let envelope = tokio::time::timeout(
+            Duration::from_secs(15),
+            crate::client::call_host(store, &self.name, &call, None, &mut interrupt),
+        )
+        .await
+        .map_err(|_| "daemon 验收超时".to_owned())??;
+        if let Some(error) = envelope.get("error").filter(|e| !e.is_null()) {
+            return Err(format!(
+                "daemon 验收 RPC 失败: {}",
+                error.get("message").and_then(Value::as_str).unwrap_or("")
+            ));
+        }
+        let result = envelope.get("result").cloned().unwrap_or(Value::Null);
+        let stdout = decode_stdout(&result);
+        let exit = result.get("exitCode").and_then(Value::as_i64).unwrap_or(-1);
+        verify_reply(&stdout, exit, &marker, &credentials.run_user)
+    }
+
+    /// 释放网关暂存；返回错误文本供调用方提示（不视为部署失败）。
+    async fn cleanup(&mut self, store: &Store) -> Option<String> {
+        let id = self.prepared.take()?;
+        match self
+            .call(store, serde_json::json!({"action": "cleanup", "id": id}), None)
+            .await
+        {
+            Ok(_) => None,
+            Err(error) => Some(format!("网关临时部署文件清理失败: {error}")),
+        }
+    }
+}
+
+fn marker_hex() -> String {
+    format!("{:08x}", rand::random::<u32>())
+}
+
+/// 解码 exec 响应 stdoutB64。
+fn decode_stdout(result: &Value) -> String {
+    use base64::Engine;
+    result
+        .get("stdoutB64")
+        .and_then(Value::as_str)
+        .map(|s| base64::engine::general_purpose::STANDARD.decode(s).unwrap_or_default())
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
+}
+
+/// 验收公共断言：退出码为 0 且输出尾部为 marker + 服务用户。
+fn verify_reply(stdout: &str, exit_code: i64, marker: &str, run_user: &str) -> Result<(), String> {
+    let expected = format!("\n{marker}\n{run_user}");
+    if exit_code == 0 && stdout.trim_end().ends_with(&expected) {
+        Ok(())
+    } else {
+        Err("daemon 验收输出或执行用户不匹配".into())
+    }
 }
 
 fn redact(text: &str, secrets: &[&str]) -> String {
@@ -459,7 +683,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
             host: target.host.clone(),
             port: target.port,
             ssh_port: target.ssh_port,
-            via: None,
+            via: options.via.clone(),
         };
         store
             .assert_available(&record, &hosts)
@@ -467,6 +691,17 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
     }
     let mut progress = |text: &str| output(text);
     let bundle = bundle::resolve(options.package.as_deref(), &mut progress)?;
+    let mut gateway = match &options.via {
+        Some(name) => Some(GatewayDeploy::resolve(store, name)?),
+        None => None,
+    };
+    // 私钥统一在此读为 PEM 内容：直连与网关路径共用同一语义。
+    let identity_pem = match &options.identity {
+        Some(path) => Some(
+            std::fs::read_to_string(path).map_err(|e| format!("读取私钥 {path} 失败: {e}"))?,
+        ),
+        None => None,
+    };
     let cancelled = AtomicBool::new(false);
     let mut failures = 0;
     for target in &options.targets {
@@ -478,16 +713,13 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
         output(&format!("正在部署 {} ({})\n", target.name, target.host));
         let mut password: Option<String> = None;
         let mut sudo_password: Option<String> = None;
-        let mut transcript = String::new();
-        let mut truncated = false;
+        let mut transcript = Transcript::new();
         let outcome: Result<(String, InstallOutput), String> = async {
-            let fingerprint = ssh::inspect(&target.host, target.ssh_port).await?;
-            let valid = fingerprint.starts_with("SHA256:")
-                && fingerprint.len() == 50
-                && fingerprint[7..]
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/');
-            if !valid {
+            let fingerprint = match gateway.as_ref() {
+                Some(gateway) => gateway.inspect(store, target).await?,
+                None => ssh::inspect(&target.host, target.ssh_port).await?,
+            };
+            if !ssh::valid_fingerprint(&fingerprint) {
                 return Err("SSH 返回无效主机指纹".into());
             }
             let record = config::Target {
@@ -526,33 +758,46 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                 if cancelled.load(Ordering::SeqCst) {
                     return Err("操作已取消".into());
                 }
-                let ssh_target = SshTarget {
-                    host: target.host.clone(),
-                    ssh_port: target.ssh_port,
-                    username: target.username.clone(),
-                    fingerprint: Some(fingerprint.clone()),
-                    identity: options.identity.clone(),
-                    password: password.clone(),
-                    sudo_password: sudo_password.clone(),
-                };
-                let mut collector = |stderr: bool, data: &[u8]| {
-                    if truncated {
-                        return;
+                let attempt: Result<InstallOutput, String> = if let Some(gateway) = gateway.as_mut() {
+                    gateway.ensure_prepared(store, &bundle).await?;
+                    let mut via_output = |event: crate::client::StreamEvent| {
+                        transcript.push(event.stderr, &event.data);
+                    };
+                    let call = gateway.install(
+                        store,
+                        target,
+                        &fingerprint,
+                        identity_pem.as_deref(),
+                        password.as_deref(),
+                        sudo_password.as_deref(),
+                        Some(&mut via_output),
+                    );
+                    tokio::select! {
+                        result = call => result,
+                        _ = tokio::signal::ctrl_c() => {
+                            cancelled.store(true, Ordering::SeqCst);
+                            Err("操作已取消".into())
+                        }
                     }
-                    let text = String::from_utf8_lossy(data);
-                    if transcript.len() + text.len() > 1024 * 1024 {
-                        transcript.clear();
-                        truncated = true;
-                    } else {
-                        transcript.push_str(&text);
-                    }
-                    let _ = stderr;
-                };
-                let attempt = tokio::select! {
-                    result = install_target(&ssh_target, &bundle, target.port, &mut collector) => result,
-                    _ = tokio::signal::ctrl_c() => {
-                        cancelled.store(true, Ordering::SeqCst);
-                        Err("操作已取消".into())
+                } else {
+                    let ssh_target = SshTarget {
+                        host: target.host.clone(),
+                        ssh_port: target.ssh_port,
+                        username: target.username.clone(),
+                        fingerprint: Some(fingerprint.clone()),
+                        identity: identity_pem.clone(),
+                        password: password.clone(),
+                        sudo_password: sudo_password.clone(),
+                    };
+                    let mut direct_output = |stderr: bool, data: &[u8]| {
+                        transcript.push(stderr, data);
+                    };
+                    tokio::select! {
+                        result = install_target(&ssh_target, &bundle, target.port, &mut direct_output) => result,
+                        _ = tokio::signal::ctrl_c() => {
+                            cancelled.store(true, Ordering::SeqCst);
+                            Err("操作已取消".into())
+                        }
                     }
                 };
                 match attempt {
@@ -561,7 +806,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                         if cancelled.load(Ordering::SeqCst) {
                             return Err("操作已取消".into());
                         }
-                        if error.contains(ssh::AUTH_REQUIRED) && ssh_attempts < 3 {
+                        if error.contains(ssh::AUTH_REQUIRED) && ssh_attempts < MAX_AUTH_ATTEMPTS {
                             ssh_attempts += 1;
                             password = Some(prompt::secret(&format!(
                                 "{}@{} SSH 密码",
@@ -569,7 +814,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                             ))?);
                         } else if target.username != "root"
                             && error.contains(ssh::SUDO_PASSWORD_REQUIRED)
-                            && sudo_attempts < 3
+                            && sudo_attempts < MAX_AUTH_ATTEMPTS
                         {
                             sudo_attempts += 1;
                             sudo_password = Some(prompt::secret(&format!(
@@ -582,12 +827,13 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                     }
                 }
             };
-            if installed.token.is_empty()
-                || !installed.certificate.contains("BEGIN CERTIFICATE")
-            {
+            if !installed.is_valid() {
                 return Err("安装未返回有效连接凭据".into());
             }
-            verify_target(target, &installed).await?;
+            match gateway.as_ref() {
+                Some(gateway) => gateway.verify(store, target, &installed).await?,
+                None => verify_target(target, &installed).await?,
+            }
             if cancelled.load(Ordering::SeqCst) {
                 return Err("操作已取消".into());
             }
@@ -596,7 +842,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                 host: target.host.clone(),
                 port: target.port,
                 ssh_port: target.ssh_port,
-                via: None,
+                via: options.via.clone(),
             };
             let credentials = Credentials {
                 token: installed.token.clone(),
@@ -610,9 +856,9 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
         .await;
         match outcome {
             Ok((version, installed)) => {
-                if !transcript.is_empty() {
+                if !transcript.text.is_empty() {
                     output(&redact(
-                        &transcript,
+                        &transcript.text,
                         &[
                             password.as_deref().unwrap_or(""),
                             sudo_password.as_deref().unwrap_or(""),
@@ -632,6 +878,11 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                 failures += 1;
             }
         }
+    }
+    if let Some(gateway) = gateway.as_mut()
+        && let Some(error) = gateway.cleanup(store).await
+    {
+        output(&format!("{error}\n"));
     }
     bundle.cleanup();
     Ok(if failures > 0 { 1 } else { 0 })

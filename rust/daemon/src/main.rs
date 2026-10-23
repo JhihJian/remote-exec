@@ -1,4 +1,5 @@
 mod auth;
+mod deploy;
 mod ctl;
 mod exec;
 mod files;

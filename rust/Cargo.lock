@@ -1736,6 +1736,8 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "rand 0.9.5",
+ "remote-exec-ssh",
  "rustls-pemfile",
  "rustls-webpki",
  "serde_json",
@@ -1752,6 +1754,8 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
+ "rand 0.9.5",
+ "remote-exec-ssh",
  "reqwest",
  "rpassword",
  "russh",
@@ -1768,6 +1772,17 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tokio-util",
+]
+
+[[package]]
+name = "remote-exec-ssh"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "russh",
+ "russh-sftp",
+ "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]

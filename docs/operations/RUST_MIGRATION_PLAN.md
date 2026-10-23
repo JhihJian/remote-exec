@@ -45,16 +45,16 @@
 
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
-| 客户端库 + TUI | 完整（readline 交互、:host/:cd/:timeout/:flow、二进制预览） | 缺失 | Phase 3a 实现 rex；TUI 收窄为 readline 交互，不做全屏框架 |
+| 客户端库 + TUI | 完整（readline 交互、:host/:cd/:timeout/:flow、二进制预览） | 已交付（rust/rex，readline 交互、一次性子命令、smoke） | Phase 3a 已交付；TUI 收窄为 readline 交互，不做全屏框架 |
 | Pi extension | 独立实现，不依赖 Node remote-exec 运行时 | 协议兼容 Rust daemon | 保留：Pi 宿主适配层边界；Phase 1 后对 Rust daemon 冒烟，Phase 5 终验 |
-| smoke 安装验收 | 需要 Node（scripts/smoke.js） | 缺失 | Rust 二进制自带 smoke 子命令，目标机无需 Node |
+| smoke 安装验收 | 需要 Node（scripts/smoke.js） | rex 自带 smoke 子命令，目标机无需 Node | Phase 3a 已交付 |
 
 ### 2.5 发布
 
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
 | build-release + GitHub release | 完整（x64 Node 包，无体积门禁） | 原型构建（<2MB 门禁，x64+ARM64） | Phase 4 Rust 正式发布流程 |
-| 客户端分发 | rex.sh → node src/cli/main.js | 缺失 | Phase 3a/5：rex 二进制 tarball + rex.sh 改指向 |
+| 客户端分发 | rex.sh → node src/cli/main.js | rex.sh 已指向 rex 二进制（deploy 除外） | tarball 分发与 deploy 路由在 Phase 3b/5 收口 |
 
 ### 2.6 生产机群事实（迁移对象盘点）
 
@@ -140,9 +140,11 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 
 实机验收（2026-10-23）：`test/rust-prototype/build-phase2-live-bundle.sh` + `phase2-live.py`（python3 标准库驱动，TLS 真实 daemon backend）十项检查：首次升级、TLS 代理、二次升级、在途连接零中断、新连接路由、回滚、retire、supervisor 重启恢复、两段式收尾。x86_64（xiaomi，Python 3.14/OpenSSL 3.5）与 ARM64（nm24 openEuler 22.03，Python 3.9/OpenSSL 1.1.1）均 10/10 通过。兼容性发现：CA 需带 keyUsage 扩展（新 OpenSSL 严格校验），且 basicConstraints 不能经 -addext 重复添加（openssl 1.1.1 产生重复扩展被 rustls 拒绝）。Phase 2 退出条件全部达成。
 
-### Phase 3a：rex 核心
+### Phase 3a：rex 核心（已完成）
 范围：hosts.json/ssh-hosts.json/credentials 兼容读写（含 servername/cwd/via）；exec/exec.stream/file.read/file.write/upload/download/relay；smoke 子命令暴露；readline 交互模式（:host/:cd/:timeout/:flow/:hosts/:q、二进制预览、退出摘要）；rex.sh 切换入口。
 退出条件：rex 对 Rust daemon 全操作路径可用；现有 ~/.config/remote-exec/hosts.json 直接可用；日常操作可用 rex dogfood。
+
+进度（2026-10-23）：`rust/rex`（bin rex）交付，依赖 tokio-rustls/tokio-tungstenite/reqwest(rustls)/rustyline，不入 daemon 2MB 门禁。loopback 套件 `test/rust-prototype/phase3a.js` 14 项通过（一次性 exec/read/write、30MB upload/download 哈希、relay 信封、smoke、hosts 并行探测、交互管道 PWD 跟随与退出摘要、Node config-store 互读）；Rust 单测 3 项（register 格式与 Node 互通、幂等/端点冲突、指纹 key 格式）。dogfood：xiaomi 旁挂 Rust daemon（0.0.0.0:8792，jhihjian，注册名 xiaomi-rust）实机验证 exec/smoke/read/write/upload/download/交互全套；现有 hosts.json 全部 14 台直接可用（Node 旧证书主机报 CaUsedAsEndEntity，属预期，Phase 5 迁移时换新证书）。双架构 musl 静态构建通过（x86_64 2,646,928 / ARM64 2,232,568 字节，无体积门禁）。rex deploy 仍由 rex.sh 路由到 Node（Phase 3b 移除）。
 
 ### Phase 3b：rex 部署与升级 UX
 范围：deploy 直连（russh：指纹、密码/密钥/agent、sudo、验收、登记、脱敏）；发布包下载（GitHub latest、断点续传、HTTPS-only）；upgrade 编排 UX（两段式 ctl 驱动）。

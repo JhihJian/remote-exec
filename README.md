@@ -168,21 +168,17 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 
 ## 客户端
 
-### TUI
+### rex（Rust，默认入口）
 
-TUI 客户端使用内置 `readline`，支持执行单条命令、切换主机、跟随日志和查看主机连通性。
-
-```bash
-node src/tui/app.js gateway
-node src/tui/app.js
-node src/tui/app.js --list
-```
-
-仓库中的 `rex.sh` 可作为全局命令入口：
+rex 是 Rust 实现的操作客户端，交互会话与一次性子命令与 Node 版一致，直接复用 `~/.config/remote-exec/hosts.json` 与既有凭据；`rex deploy` 暂仍由 Node 承接（Phase 3b 迁移）。
 
 ```bash
-./rex.sh gateway
-./rex.sh hosts
+./rex.sh                # 交互式会话（列出主机选择）
+./rex.sh gateway        # 直连指定主机
+./rex.sh hosts          # 列出主机并探测延迟
+./rex.sh exec gateway -- "uname -a"
+./rex.sh read gateway /etc/hostname
+./rex.sh upload gateway ./local.bin /remote/path.bin
 ```
 
 会话命令：
@@ -196,7 +192,13 @@ node src/tui/app.js --list
 | `:hosts` | 列出主机并探测延迟 |
 | `:q` | 退出会话 |
 
-### Node.js 客户端库
+### Node.js 客户端库（回滚资产）
+
+Node 版 TUI 与客户端库保留为迁移期回滚资产：
+
+```bash
+node src/tui/app.js gateway
+```
 
 `src/client/index.js` 提供以下接口：
 
@@ -439,7 +441,7 @@ node .agents/architecture-governance/check-state.mjs check --require-active
 | `test/integration/runner.js` | 测试环境编排和临时凭证生成 |
 | `SECURITY.md` | 安全边界与漏洞报告政策 |
 
-运行时依赖方向保持单向：daemon 不依赖 client，TUI 依赖 Node client，Pi extension 保持独立，集成测试通过外部进程验证 daemon，不复用生产传输实现。
+运行时依赖方向保持单向：daemon 不依赖 client，rex 交互模式内置于 rex 客户端，Pi extension 保持独立，集成测试通过外部进程验证 daemon，不复用生产传输实现。Node 客户端仅在迁移期承接 deploy 路径。
 
 
 ## 许可证

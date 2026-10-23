@@ -98,7 +98,7 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 
 ## Rust 离线原型边界
 
-Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。正式 SSH 部署与客户端仍处于迁移过程中。
+Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。Rust 客户端 rex 已交付：直接复用现有 ~/.config/remote-exec/hosts.json（含 credentials/.deploy.lock 与 Node config-store 同格式互操作），提供一次性 exec/read/write/upload/download/smoke 子命令、hosts 并行探测与 readline 交互会话（:host/:cd/:timeout/:flow/:hosts/:q、PWD 跟随、二进制预览、退出摘要），relay 主机经网关信封协议访问但暂不支持 HTTP 流式传输；rex.sh 已将非 deploy 入口切换到 rex 二进制（deploy 仍走 Node，待 Phase 3b）。正式 SSH 部署仍在迁移过程中。
 
 Rust 原型保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和可写可执行的目录，安装脚本使用常见系统工具；root 安装可创建独立 systemd 服务。Rust daemon 的 SIGTERM 进入排空，既有请求完成后退出，排空超时强制关闭连接；完整迁移还需实现网关部署与弱网 SSH 续传。
 
@@ -115,8 +115,9 @@ Rust 图中调用向下委托，同层协作由明确连线表达，原型与 No
 | Rust 生命周期协调 | 就绪状态、资源计数、排空和强制关闭通知 | `rust/daemon/src/lifecycle.rs` |
 | Rust relay 操作 | 单跳白名单、目标 TLS、阶段化错误和总超时 | `rust/daemon/src/relay.rs` |
 | Rust supervisor 与升级编排 | 状态持久化、重启恢复、降权 spawn、同 uid 控制面、ctl 两段式升级 | `rust/daemon/src/supervisor.rs`、`rust/daemon/src/ctl.rs` |
+| Rust 客户端 rex | hosts.json/ssh-hosts.json/credentials 互操作、WSS 直连与 relay 信封、HTTP 流式传输、smoke、readline 交互 | `rust/rex/src/`（config.rs、client.rs、http.rs、smoke.rs、ui.rs、main.rs） |
 
-构建包由 `scripts/build-rust-prototype.sh` 与 `rust/packaging/` 生成，协议、排空、relay 和禁网验证位于 `test/rust-prototype/`。运行条件、测量口径和剩余迁移范围见 [Rust 离线原型](../operations/RUST_OFFLINE_PROTOTYPE.md)。Rust 测试目前作为迁移期等价性证据，正式顶层能力仍需在客户端、部署和发布路径迁移完成后调整归属。
+构建包由 `scripts/build-rust-prototype.sh` 与 `rust/packaging/` 生成，协议、排空、relay、禁网验证与 rex 客户端回归位于 `test/rust-prototype/`。运行条件、测量口径和剩余迁移范围见 [Rust 离线原型](../operations/RUST_OFFLINE_PROTOTYPE.md)。Rust 测试目前作为迁移期等价性证据，正式顶层能力仍需在部署和发布路径迁移完成后调整归属。
 
 ## 一键安装能力
 
@@ -143,7 +144,7 @@ RPC 服务器暴露 `exec`、`exec.stream`、`file.read`、`file.write`、`relay
 
 文件 RPC 只接受绝对路径。大文件经 `/upload` 与 `/download` 的 HTTPS 流式端点传输，两个端点只支持直连 daemon，不经 relay。
 
-Node.js 客户端负责直连和深度为一的 relay 编排。TUI 依赖 Node.js 客户端；Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。
+客户端负责直连和深度为一的 relay 编排。rex（Rust）是默认操作客户端，覆盖直连、单跳 relay、HTTP 流式传输与交互会话；Node.js 客户端在迁移期承接 deploy 路径。Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。
 
 relay 只接受 IPv4 字面量和白名单内目标，只转发 `exec`、`exec.stream`、`file.read` 和 `file.write`，禁止嵌套 relay。网关在连接目标时校验证书，并将目标认证失败、证书失败和不可达状态区分为不同 RPC 错误。
 

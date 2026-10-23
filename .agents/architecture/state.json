@@ -97,7 +97,7 @@
     },
     {
       "id": "client-adapter-boundary",
-      "conclusion": "Node.js 客户端负责直连和深度为一的 relay 编排。TUI 依赖 Node.js 客户端；Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。",
+      "conclusion": "客户端负责直连和深度为一的 relay 编排。rex（Rust）是默认操作客户端，覆盖直连、单跳 relay、HTTP 流式传输与交互会话；Node.js 客户端在迁移期承接 deploy 路径。Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -106,7 +106,7 @@
         },
         {
           "path": "README.md",
-          "locator": "运行时依赖方向保持单向：daemon 不依赖 client，TUI 依赖 Node client，Pi extension 保持独立，集成测试通过外部进程验证 daemon，不复用生产传输实现。"
+          "locator": "运行时依赖方向保持单向：daemon 不依赖 client，rex 交互模式内置于 rex 客户端，Pi extension 保持独立，集成测试通过外部进程验证 daemon，不复用生产传输实现。"
         },
         {
           "path": "pi-extension/remote-exec.ts",
@@ -188,7 +188,7 @@
     },
     {
       "id": "rust-offline-prototype-boundary",
-      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。正式 SSH 部署与客户端仍处于迁移过程中。",
+      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。Rust 客户端 rex 已交付：直接复用现有 ~/.config/remote-exec/hosts.json（含 credentials/.deploy.lock 与 Node config-store 同格式互操作），提供一次性 exec/read/write/upload/download/smoke 子命令、hosts 并行探测与 readline 交互会话（:host/:cd/:timeout/:flow/:hosts/:q、PWD 跟随、二进制预览、退出摘要），relay 主机经网关信封协议访问但暂不支持 HTTP 流式传输；rex.sh 已将非 deploy 入口切换到 rex 二进制（deploy 仍走 Node，待 Phase 3b）。正式 SSH 部署仍在迁移过程中。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -238,6 +238,22 @@
         {
           "path": "test/rust-prototype/phase2-live.py",
           "locator": "Phase 2 实机验收全部通过"
+        },
+        {
+          "path": "rust/rex/src/main.rs",
+          "locator": "rex：remote-exec Rust 客户端（交互与一次性操作）"
+        },
+        {
+          "path": "rust/rex/src/client.rs",
+          "locator": "WSS 客户端：直连与经网关 relay（信封协议），与 Node lib/client.js 语义一致"
+        },
+        {
+          "path": "test/rust-prototype/phase3a.js",
+          "locator": "Phase 3a：rex Rust 客户端 loopback 验收"
+        },
+        {
+          "path": "rex.sh",
+          "locator": "rex deploy 暂仍走 Node"
         }
       ]
     },

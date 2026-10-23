@@ -8,6 +8,7 @@ PORT=8791
 TARGET="${RUST_TARGET:-x86_64-unknown-linux-musl}"
 RUST_CC="${RUST_CC:-}"
 RUST_LINKER="${RUST_LINKER:-}"
+SKIP_BUILD=0
 LIMIT=2000000
 while (($#)); do
   case "$1" in
@@ -22,8 +23,10 @@ while (($#)); do
         --linker) RUST_LINKER="$2" ;;
       esac
       shift 2 ;;
+    --skip-build) SKIP_BUILD=1 ; shift ;;
     --help|-h)
-      printf '%s\n' '用法：build-rust-prototype.sh --address DNS或IPv4 [--port 8791] [--output-dir DIR] [--target TARGET] [--cc COMPILER] [--linker LINKER]'
+      printf '%s\n' '用法：build-rust-prototype.sh --address DNS或IPv4 [--port 8791] [--output-dir DIR] [--target TARGET] [--cc COMPILER] [--linker LINKER] [--skip-build]'
+      printf '%s\n' '--skip-build：二进制已由交叉环境（如 docker messense/rust-musl-cross）产出，脚本仅校验并打包'
       exit 0 ;;
     *) printf '未知参数：%s\n' "$1" >&2; exit 2 ;;
   esac
@@ -51,24 +54,42 @@ else
   done
   SAN="DNS:localhost,IP:127.0.0.1,DNS:$ADDRESS"
 fi
-for tool in cargo rustc "$RUST_CC" "$RUST_LINKER" openssl tar gzip sha256sum readelf node; do
+BUILD_TOOLS=(cargo rustc)
+if ((SKIP_BUILD)); then
+  # 交叉环境已产出二进制，本机只校验打包。
+  BUILD_TOOLS=(cargo)
+else
+  [[ -n "$RUST_CC" ]] && BUILD_TOOLS+=("$RUST_CC")
+  [[ -n "$RUST_LINKER" ]] && BUILD_TOOLS+=("$RUST_LINKER")
+fi
+for tool in "${BUILD_TOOLS[@]}" openssl tar gzip sha256sum readelf node; do
   command -v "$tool" >/dev/null || { printf '构建端缺少：%s\n' "$tool" >&2; exit 1; }
 done
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 ARCHIVE="$OUTPUT_DIR/remote-exec-prototype-linux-${ARCH}.tar.gz"
 [[ ! -e "$ARCHIVE" && ! -e "$OUTPUT_DIR/access" ]] || { printf '输出目录已有部署资产，请指定新目录，避免轮换既有凭据\n' >&2; exit 1; }
-CC_TARGET_ENV="${TARGET//-/_}"
-export "CC_${CC_TARGET_ENV}=$RUST_CC"
-TARGET_ENV="${TARGET^^}"
-TARGET_ENV="${TARGET_ENV//-/_}"
-export "CARGO_TARGET_${TARGET_ENV}_LINKER=$RUST_LINKER"
-cargo build --release --locked \
-  --target "$TARGET" --manifest-path "$PROJECT_ROOT/rust/daemon/Cargo.toml"
+if (( ! SKIP_BUILD )); then
+  CC_TARGET_ENV="${TARGET//-/_}"
+  export "CC_${CC_TARGET_ENV}=$RUST_CC"
+  TARGET_ENV="${TARGET^^}"
+  TARGET_ENV="${TARGET_ENV//-/_}"
+  export "CARGO_TARGET_${TARGET_ENV}_LINKER=$RUST_LINKER"
+  cargo build --release --locked \
+    --target "$TARGET" --manifest-path "$PROJECT_ROOT/rust/daemon/Cargo.toml"
+fi
 BINARY="$PROJECT_ROOT/rust/target/$TARGET/release/remote-execd"
+[[ -f "$BINARY" ]] || { printf '二进制不存在：%s\n' "$BINARY" >&2; exit 1; }
 if readelf -l "$BINARY" | grep -q 'INTERP' || readelf -d "$BINARY" | grep -q 'NEEDED'; then
   printf '构建产物包含动态解释器或动态库依赖\n' >&2; exit 1
 fi
+# 产物架构必须与目标一致（防止 x86 二进制误标 arm64 的打包事故）。
+case "$TARGET" in
+  x86_64-unknown-linux-musl) EXPECTED_MACHINE='Advanced Micro Devices X86-64' ;;
+  aarch64-unknown-linux-musl) EXPECTED_MACHINE='AArch64' ;;
+esac
+readelf -h "$BINARY" | grep -q "Machine:.*$EXPECTED_MACHINE" \
+  || { printf '二进制架构与 %s 不匹配（期望 %s）\n' "$TARGET" "$EXPECTED_MACHINE" >&2; exit 1; }
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 umask 077

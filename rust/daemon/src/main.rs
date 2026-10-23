@@ -1,4 +1,5 @@
 mod auth;
+mod ctl;
 mod exec;
 mod files;
 mod lifecycle;
@@ -41,7 +42,14 @@ fn options(args: &[String]) -> Result<Option<Options>, AnyError> {
 子命令:\n\
   daemon      运行 daemon（默认，可省略）\n\
   supervisor  运行固定入口 supervisor\n\
-daemon 参数: --host <host> --port <port> --cert <pem> --key <pem> --token-sha256-file <file> [--relay-allow <cidr>] [--drain-timeout-ms <ms>]"
+  ctl         supervisor 控制面客户端（status/upgrade/rollback/retire）\n\
+daemon 参数: --host <host> --port <port> --cert <pem> --key <pem> --token-sha256-file <file> [--relay-allow <cidr>] [--drain-timeout-ms <ms>]\n\
+ctl 用法:\n\
+  remote-execd ctl --control <sock> status\n\
+  remote-execd ctl --control <sock> rollback\n\
+  remote-execd ctl --control <sock> retire <name>\n\
+  remote-execd ctl --control <sock> upgrade --package <tar.gz> --sha256 <hex> --versions-dir <dir> [--link <path>] [--cwd <dir>] [--env K=V]... -- <command...>\n\
+  command 中可用 {{version_dir}} 引用解包后的版本目录（如 {{version_dir}}/bin/remote-execd）"
             );
             return Ok(None);
         }
@@ -80,10 +88,11 @@ async fn main() -> Result<(), AnyError> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
         Some("supervisor") => return supervisor::run(&arguments[1..]).await,
+        Some("ctl") => return ctl::run(&arguments[1..]),
         Some("daemon") | None => {}
         Some(other) if other.starts_with('-') => {}
         Some(other) => {
-            return Err(format!("未知子命令: {other}（支持 daemon 或 supervisor）").into());
+            return Err(format!("未知子命令: {other}（支持 daemon、supervisor 或 ctl）").into());
         }
     }
     let opts_args = match arguments.first().map(String::as_str) {

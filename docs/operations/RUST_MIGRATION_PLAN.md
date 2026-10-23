@@ -136,6 +136,8 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 范围：start spawn 路径、retire 语义对齐（SIGTERM 等待退出）、权限 drop（root supervisor → 服务用户 daemon）、状态持久化与重启恢复（含 state 损坏拒绝启动）、systemd unit、ctl upgrade/rollback/retire/status（两段式）、候选失败保护。
 退出条件：loopback 全流程自动化测试（安装→升级→在途操作不断→回滚→重启恢复→候选失败保持 active→retire 保护）；x86_64 与 ARM64 实机各一次真实升级（脚本驱动，不依赖 rex UX）。
 
+进度（2026-10）：loopback 套件 `test/rust-prototype/phase2.js` 已交付五场景：升级编排（含 {version_dir} 占位符）、在途零中断、回滚、retire 保护与两段式；重启恢复 respawn 与 stale 清理；候选失败保护与坏包拒绝；损坏/未知 state 拒绝启动；--run-user 降权路径（同 uid；跨 uid 属实机门禁）。ctl 子命令（rust/daemon/src/ctl.rs）与生产 systemd unit 模板（rust/packaging/remote-exec-supervisor.service）已交付。剩余：x86_64 与 ARM64 实机各一次真实升级。
+
 ### Phase 3a：rex 核心
 范围：hosts.json/ssh-hosts.json/credentials 兼容读写（含 servername/cwd/via）；exec/exec.stream/file.read/file.write/upload/download/relay；smoke 子命令暴露；readline 交互模式（:host/:cd/:timeout/:flow/:hosts/:q、二进制预览、退出摘要）；rex.sh 切换入口。
 退出条件：rex 对 Rust daemon 全操作路径可用；现有 ~/.config/remote-exec/hosts.json 直接可用；日常操作可用 rex dogfood。

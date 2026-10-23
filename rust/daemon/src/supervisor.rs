@@ -115,6 +115,11 @@ fn setpgid_self() -> io::Result<()> {
 fn drop_privileges(identity: &RunIdentity) -> io::Result<()> {
     // 顺序：先建立独立进程组，再以 root 身份初始化补充组并降权。
     setpgid_self()?;
+    // 目标就是当前用户时降权为 no-op：非 root 进程的 setgroups 只允许子集，
+    // 会因实际补充组与 /etc/group 不一致而 EPERM；无降权就不应改组。
+    if unsafe { libc::getuid() } == identity.uid && unsafe { libc::getgid() } == identity.gid {
+        return Ok(());
+    }
     if unsafe { libc::initgroups(identity.name.as_ptr(), identity.gid) } == -1 {
         return Err(io::Error::last_os_error());
     }

@@ -1,0 +1,29 @@
+# remote-exec supervisor 生产模板（占位路径，部署时替换为本机安装前缀）。
+#
+# - ExecStart 经 /opt/remote-exec/current/bin/remote-execd 间接引用当前版本，
+#   current 符号链接由 `remote-execd ctl upgrade` 原子更新，指向
+#   /opt/remote-exec/versions/<id>。
+# - 升级、回滚、退役经 SSH root 通道执行：
+#     remote-execd ctl --control /run/remote-exec/supervisor.sock upgrade ...
+#     remote-execd ctl --control /run/remote-exec/supervisor.sock rollback
+#     remote-execd ctl --control /run/remote-exec/supervisor.sock retire <name>
+# - loopback 测试可直接用 --host/--port/--control/--state/--run-user 参数
+#   覆盖 ExecStart 中的值，不必修改本模板。
+# - 不设置 NoNewPrivileges/ProtectSystem 等：supervisor 需要降权 spawn
+#   服务用户进程，daemon 也需要写上传文件；控制面 socket 与 state 文件
+#   已由程序自身限定为 root 属主 0600。
+
+[Unit]
+Description=remote-exec supervisor
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/remote-exec/current/bin/remote-execd supervisor --host 0.0.0.0 --port 8791 --control /run/remote-exec/supervisor.sock --state /etc/remote-exec/supervisor-state.json --run-user remote-exec
+RuntimeDirectory=remote-exec
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

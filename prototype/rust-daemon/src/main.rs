@@ -4,6 +4,7 @@ mod files;
 mod relay;
 mod rpc;
 mod server;
+mod supervisor;
 
 use std::{error::Error, io::BufReader, sync::Arc};
 use tokio::net::TcpListener;
@@ -62,6 +63,10 @@ fn options() -> Result<Option<Options>, AnyError> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), AnyError> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("--supervisor") {
+        return supervisor::run(&arguments[1..]).await;
+    }
     let Some(opts) = options()? else {
         return Ok(());
     };

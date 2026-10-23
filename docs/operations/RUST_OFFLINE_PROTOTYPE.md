@@ -12,7 +12,7 @@ Rust 原型用于验证小于 2MB 的离线部署包：Linux 目标机通过 SSH
 | 完整部署压缩包严格小于 2,000,000 字节 | 构建脚本强制检查，包含服务器证书与私钥 |
 | 禁网、无 Node/npm/Cargo/OpenSSL 的环境 | 已验证普通用户离线安装和启动 |
 | TLS 鉴权、命令、文件协议与异常输入 | 持久化回归测试覆盖 |
-| `deploy.ssh`、supervisor 排空与无中断升级 | 后续迁移范围，原型未知方法返回 `-32601` |
+| `deploy.ssh`、supervisor 排空与无中断升级 | supervisor 状态机已实现并有回归测试；`deploy.ssh`、systemd 集成、排空迁移和无中断升级仍在后续范围 |
 | SSH 上传断点续传、自动登记主机、开机启动 | 后续部署流程范围 |
 | 其他 CPU、内核与额外目标设备 | 待取得设备事实后验证 |
 
@@ -105,9 +105,7 @@ bash test/rust-prototype/offline.sh
 
 18 项外部协议与异常行为检查、2 项 Rust 单元测试、格式和 Clippy 检查、两种架构静态链接检查与禁网离线安装启动均已通过。100MB 上传下载的大小与 SHA-256 一致。Linux x86_64 实机完成 TLS/WSS、命令、流式输出、文件 RPC、HTTPS 上传下载和 systemd 重启验证；ARM64 openEuler 22.03 LTS-SP1 实机完成 systemd 安装、服务重启、TLS/WSS 和经 NM105 relay 的命令执行验证。
 
-客户端 token 保留在本机，服务器包只携带哈希。
-
-## 完整迁移的验收条件
+Rust supervisor 已提供固定 TCP 入口、Unix socket 控制面、generation 注册、候选 `/readyz` 检查、promote、rollback、旧连接保留和 retire 保护。它目前通过 Rust binary 的 `--supervisor` 子命令运行，尚未接入安装器、systemd、自动部署和正式升级发布流程。
 
 完整 Rust 替换须保留项目现有顶层能力并通过对应测试：relay 的网段、目标证书和错误分类，SSH 网关部署的指纹校验及主机登记，supervisor 的候选验证、切换、旧连接排空和回滚。
 

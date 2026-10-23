@@ -98,7 +98,7 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 
 ## Rust 离线原型边界
 
-Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包；正式 Node daemon、SSH 部署和 supervisor 继续独立维护。
+Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已加入 supervisor 状态机验证；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包。正式 Node daemon、SSH 部署、Rust supervisor 安装集成和客户端仍处于迁移过程中。
 
 Rust 原型保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和可写可执行的目录，安装脚本使用常见系统工具；root 安装可创建独立 systemd 服务。Rust 原型的 SIGTERM 取消活跃工作，完整迁移还需实现网关部署、排空升级和弱网 SSH 续传。
 

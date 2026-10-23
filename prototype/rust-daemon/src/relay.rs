@@ -141,7 +141,7 @@ impl ServerCertVerifier for PinnedCertificateVerifier {
     }
 }
 
-fn build_tls(ca: &str) -> Result<Arc<ClientConfig>, RpcError> {
+pub(crate) fn build_tls(ca: &str) -> Result<Arc<ClientConfig>, RpcError> {
     if !ca.contains("BEGIN CERTIFICATE") {
         return Err(error(-32015, "auth.ca 必须是目标 CA 的 PEM 文本"));
     }

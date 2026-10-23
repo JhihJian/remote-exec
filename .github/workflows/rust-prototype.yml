@@ -44,7 +44,9 @@ jobs:
       - name: 构建完整包并检查 2MB 门禁
         run: bash scripts/build-rust-prototype.sh --address 127.0.0.1
       - name: 验证现有客户端和异常行为
-        run: node test/rust-prototype/runner.js
+        run: |
+          node test/rust-prototype/runner.js
+          node test/rust-prototype/supervisor.js
       - name: 准备离线验证镜像
         run: docker pull debian:12-slim
       - name: 验证无网络无运行时安装

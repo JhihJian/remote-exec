@@ -41,7 +41,7 @@ chmod 0600 "$STAGE/credentials/"*
 # -T 防止目标路径被并发创建后移动到其内部，-n 保留并发创建的目录。
 mv -T -n "$STAGE" "$PREFIX"
 [[ ! -d "$STAGE" ]] || { printf '目标目录在安装过程中已被创建\n' >&2; exit 1; }
-UNIT_CONTENT="$(<"$PREFIX/remote-exec-prototype.service")"
+if ((SYSTEMD)); then
   UNIT_CONTENT="$(<"$PREFIX/remote-exec-prototype.service")"
   UNIT_CONTENT="${UNIT_CONTENT//@PREFIX@/$PREFIX}"
   printf '%s\n' "$UNIT_CONTENT" > /etc/systemd/system/remote-exec-prototype.service

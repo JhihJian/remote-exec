@@ -14,7 +14,7 @@ trap 'rm -rf "$STAGE"' EXIT
 tar -xzf "$PACKAGE" -C "$STAGE"
 [[ ! -f "$STAGE/credentials/token.txt" ]] || { printf '服务包不应包含客户端 token 明文\n' >&2; exit 1; }
 [[ "$(cat "$STAGE/target")" == "$TARGET" ]] || { printf '包 target 清单错误\n' >&2; exit 1; }
-[[ -f "$STAGE/remote-exec-rust.service" ]] || { printf '包缺少 systemd unit\n' >&2; exit 1; }
+[[ -f "$STAGE/remote-exec-prototype.service" ]] || { printf '包缺少 systemd unit\n' >&2; exit 1; }
 if readelf -l "$STAGE/remote-execd" | grep -q INTERP || readelf -d "$STAGE/remote-execd" | grep -q NEEDED; then
   printf '产物不是完全静态链接\n' >&2; exit 1
 fi

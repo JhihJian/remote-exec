@@ -29,7 +29,9 @@ fn usage() -> String {
      remote-execd ctl --control <sock> rollback\n\
      remote-execd ctl --control <sock> retire <name>\n\
      remote-execd ctl --control <sock> upgrade --package <tar.gz> --sha256 <hex> \\\n\
-     \x20 --versions-dir <dir> [--link <path>] [--cwd <dir>] [--env K=V]... -- <command...>\n\
+     \x20 --versions-dir <dir> [--link <path>] [--cwd <dir>] [--env K=V]...\
+\
+     \x20 [--backend-protocol http|https] [--backend-ca <pem>] -- <command...>\n\
      upgrade 会在 command 末尾追加 --port <port>，端口由 ctl 分配并指向回环 backend。\n\
      command 中的 {version_dir} 会替换为解包后的版本目录绝对路径，\n\
      用于引用包内解压出的二进制（如 {version_dir}/bin/remote-execd）。"
@@ -226,6 +228,8 @@ struct UpgradeOptions {
     link: Option<PathBuf>,
     cwd: Option<String>,
     env: Vec<(String, String)>,
+    backend_protocol: String,
+    backend_ca: Option<String>,
     command: Vec<String>,
 }
 
@@ -236,6 +240,8 @@ fn parse_upgrade_args(args: &[String]) -> Result<UpgradeOptions, String> {
     let mut link = None;
     let mut cwd = None;
     let mut env = Vec::new();
+    let mut backend_protocol = String::new();
+    let mut backend_ca = None;
     let mut command = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -254,6 +260,13 @@ fn parse_upgrade_args(args: &[String]) -> Result<UpgradeOptions, String> {
             "--versions-dir" => versions_dir = Some(value),
             "--link" => link = Some(value),
             "--cwd" => cwd = Some(value),
+            "--backend-protocol" => {
+                if value != "http" && value != "https" {
+                    return Err("--backend-protocol 只支持 http 或 https".into());
+                }
+                backend_protocol = value;
+            }
+            "--backend-ca" => backend_ca = Some(value),
             "--env" => {
                 let Some((key, env_value)) = value.split_once('=') else {
                     return Err("--env 需要 K=V 形式".into());
@@ -273,6 +286,9 @@ fn parse_upgrade_args(args: &[String]) -> Result<UpgradeOptions, String> {
     if command.is_empty() {
         return Err("upgrade 必须在 -- 之后提供候选启动命令".into());
     }
+    if backend_ca.is_some() && backend_protocol.is_empty() {
+        return Err("--backend-ca 需要 --backend-protocol https".into());
+    }
     Ok(UpgradeOptions {
         package,
         sha256,
@@ -280,6 +296,8 @@ fn parse_upgrade_args(args: &[String]) -> Result<UpgradeOptions, String> {
         link: link.map(PathBuf::from),
         cwd,
         env,
+        backend_protocol,
+        backend_ca,
         command,
     })
 }
@@ -365,10 +383,23 @@ fn upgrade(socket: &Path, args: &[String]) -> Result<Value, String> {
         .collect();
     command.push("--port".to_owned());
     command.push(port.to_string());
+    // backend 默认 http（loopback 假 backend）；真实 daemon 仅 TLS，
+    // 需 --backend-protocol https --backend-ca <pem> 供 supervisor 做 readyz 校验。
+    let mut backend = json!({"host": "127.0.0.1", "port": port, "protocol": "http"});
+    if options.backend_protocol == "https" {
+        backend["protocol"] = json!("https");
+        let ca = options
+            .backend_ca
+            .as_deref()
+            .ok_or("https backend 必须提供 --backend-ca <pem>（supervisor readyz 校验需要）")?;
+        let ca_text =
+            fs::read_to_string(ca).map_err(|error| format!("读取 CA {} 失败: {error}", ca))?;
+        backend["ca"] = json!(ca_text);
+    }
     let mut start_request = json!({
         "method": "start",
         "generation": id,
-        "backend": {"host": "127.0.0.1", "port": port, "protocol": "http"},
+        "backend": backend,
         "command": command,
     });
     if let Some(cwd) = &options.cwd {

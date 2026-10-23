@@ -77,6 +77,8 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 function connect(port) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(port, "127.0.0.1");
+    // 兜底：连接销毁后对端 RST 不应成为未处理异常。
+    socket.on("error", () => {});
     socket.once("connect", () => resolve(socket));
     socket.once("error", reject);
   });

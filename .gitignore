@@ -9,3 +9,5 @@ dist/
 
 # Rust 原型构建目录
 prototype/rust-daemon/target/
+rust/target/
+rust/daemon/target/

@@ -12,10 +12,10 @@ use std::time::Duration;
 const HELP: &str = "用法: rex upgrade <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] \
 [--identity 私钥] [--host-key 指纹] [--retire-wait-secs 300] [--rollback]";
 
-const VERSIONS_DIR: &str = "/opt/remote-exec/versions";
-const CURRENT_LINK: &str = "/opt/remote-exec/current";
-const CONTROL_SOCKET: &str = "/run/remote-exec/supervisor.sock";
-const CREDENTIALS_DIR: &str = "/etc/remote-exec/credentials";
+pub(crate) const VERSIONS_DIR: &str = "/opt/remote-exec/versions";
+pub(crate) const CURRENT_LINK: &str = "/opt/remote-exec/current";
+pub(crate) const CONTROL_SOCKET: &str = "/run/remote-exec/supervisor.sock";
+pub(crate) const CREDENTIALS_DIR: &str = "/etc/remote-exec/credentials";
 const CTL_BINARY: &str = "/opt/remote-exec/current/bin/remote-execd";
 
 struct Options {
@@ -97,21 +97,33 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
     })
 }
 
-fn output(text: &str) {
+pub(crate) fn output(text: &str) {
     use std::io::Write;
     let mut stderr = std::io::stderr().lock();
     let _ = write!(stderr, "{text}");
     let _ = stderr.flush();
 }
 
+/// SSH 连接参数（主机名已解析为真实地址），upgrade 与 migrate 共用。
+pub(crate) struct SshCommon {
+    /// 展示用主机名（hosts 条目名）。
+    pub display: String,
+    /// SSH 实际地址。
+    pub host: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub identity: Option<String>,
+    pub host_key: Option<String>,
+}
+
 /// 指纹信任（与 deploy 相同：已知 > --host-key > 交互确认）。
-async fn trust_fingerprint(store: &Store, options: &Options) -> Result<String, String> {
-    let fingerprint = ssh::inspect(options.host_for_ssh(), options.ssh_port).await?;
+async fn trust_fingerprint(store: &Store, common: &SshCommon) -> Result<String, String> {
+    let fingerprint = ssh::inspect(&common.host, common.ssh_port).await?;
     let record = config::Target {
-        name: options.host.clone(),
-        host: options.host_for_ssh().to_owned(),
+        name: common.display.clone(),
+        host: common.host.clone(),
         port: 0,
-        ssh_port: options.ssh_port,
+        ssh_port: common.ssh_port,
         via: None,
     };
     let known = store.get_fingerprint(&record).map_err(|e| e.to_string())?;
@@ -119,14 +131,13 @@ async fn trust_fingerprint(store: &Store, options: &Options) -> Result<String, S
     if known.as_deref().is_some_and(|known| known != fingerprint) {
         return Err("SSH 主机指纹发生变化，拒绝连接".into());
     }
-    if options.host_key.as_deref().is_some_and(|k| k != fingerprint) {
+    if common.host_key.as_deref().is_some_and(|k| k != fingerprint) {
         return Err("SSH 主机指纹与 --host-key 不匹配".into());
     }
-    if !has_known && options.host_key.is_none() {
+    if !has_known && common.host_key.is_none() {
         let confirmed = prompt::confirm(&format!(
             "信任 {}:{} 的 SSH 指纹 {fingerprint}？",
-            options.host_for_ssh(),
-            options.ssh_port
+            common.host, common.ssh_port
         ))?;
         if !confirmed {
             return Err("未确认 SSH 主机指纹".into());
@@ -142,6 +153,66 @@ impl Options {
     /// SSH 目标地址（run() 已将 options.host 解析为 hosts 条目的真实地址）。
     fn host_for_ssh(&self) -> &str {
         &self.host
+    }
+}
+
+/// 连接并执行 drive，自动处理密码/sudo 重试与 SIGINT；失败时返回退出码。
+pub(crate) async fn drive_with_retry<'a, F, Fut>(
+    store: &'a Store,
+    common: &SshCommon,
+    verb: &str,
+    mut drive: F,
+) -> Result<i32, String>
+where
+    F: FnMut(SshTarget) -> Fut,
+    Fut: std::future::Future<Output = Result<i32, String>> + 'a,
+{
+    let fingerprint = trust_fingerprint(store, common).await?;
+    let mut password: Option<String> = None;
+    let mut sudo_password: Option<String> = None;
+    let mut attempts = 0;
+    let mut sudo_attempts = 0;
+    loop {
+        let ssh_target = SshTarget {
+            host: common.host.clone(),
+            ssh_port: common.ssh_port,
+            username: common.ssh_user.clone(),
+            fingerprint: Some(fingerprint.clone()),
+            identity: common.identity.clone(),
+            password: password.clone(),
+            sudo_password: sudo_password.clone(),
+        };
+        let attempt = tokio::select! {
+            result = drive(ssh_target) => result,
+            _ = tokio::signal::ctrl_c() => Err("操作已取消".into()),
+        };
+        match attempt {
+            Ok(code) => return Ok(code),
+            Err(error) => {
+                if error.contains(ssh::AUTH_REQUIRED) && attempts < 3 {
+                    attempts += 1;
+                    password = Some(prompt::secret(&format!(
+                        "{}@{} SSH 密码",
+                        common.ssh_user, common.host
+                    ))?);
+                } else if common.ssh_user != "root"
+                    && error.contains(ssh::SUDO_PASSWORD_REQUIRED)
+                    && sudo_attempts < 3
+                {
+                    sudo_attempts += 1;
+                    sudo_password = Some(prompt::secret(&format!(
+                        "{}@{} sudo 密码",
+                        common.ssh_user, common.host
+                    ))?);
+                } else {
+                    output(&format!(
+                        "{} {}失败: {error}\n",
+                        common.display, verb
+                    ));
+                    return Ok(1);
+                }
+            }
+        }
     }
 }
 
@@ -212,52 +283,18 @@ async fn upgrade_host(
     options: &Options,
     bundle: Option<&bundle::RawBundle>,
 ) -> Result<i32, String> {
-    let fingerprint = trust_fingerprint(store, options).await?;
-    let mut password: Option<String> = None;
-    let mut sudo_password: Option<String> = None;
-    let mut attempts = 0;
-    let mut sudo_attempts = 0;
-    loop {
-        let ssh_target = SshTarget {
-            host: options.host_for_ssh().to_owned(),
-            ssh_port: options.ssh_port,
-            username: options.ssh_user.clone(),
-            fingerprint: Some(fingerprint.clone()),
-            identity: options.identity.clone(),
-            password: password.clone(),
-            sudo_password: sudo_password.clone(),
-        };
-        let attempt = tokio::select! {
-            result = drive_upgrade(&ssh_target, options, bundle) => result,
-            _ = tokio::signal::ctrl_c() => Err("操作已取消".into()),
-        };
-        match attempt {
-            Ok(code) => return Ok(code),
-            Err(error) => {
-                if error.contains(ssh::AUTH_REQUIRED) && attempts < 3 {
-                    attempts += 1;
-                    password = Some(prompt::secret(&format!(
-                        "{}@{} SSH 密码",
-                        options.ssh_user,
-                        options.host_for_ssh()
-                    ))?);
-                } else if options.ssh_user != "root"
-                    && error.contains(ssh::SUDO_PASSWORD_REQUIRED)
-                    && sudo_attempts < 3
-                {
-                    sudo_attempts += 1;
-                    sudo_password = Some(prompt::secret(&format!(
-                        "{}@{} sudo 密码",
-                        options.ssh_user,
-                        options.host_for_ssh()
-                    ))?);
-                } else {
-                    output(&format!("{} 升级失败: {error}\n", options.host));
-                    return Ok(1);
-                }
-            }
-        }
-    }
+    let common = SshCommon {
+        display: options.host.clone(),
+        host: options.host_for_ssh().to_owned(),
+        ssh_user: options.ssh_user.clone(),
+        ssh_port: options.ssh_port,
+        identity: options.identity.clone(),
+        host_key: options.host_key.clone(),
+    };
+    drive_with_retry(store, &common, "升级", |ssh_target| async move {
+        drive_upgrade(&ssh_target, options, bundle).await
+    })
+    .await
 }
 
 async fn drive_upgrade(
@@ -382,16 +419,35 @@ async fn try_upgrade(
         // daemon generation 仍统一由下方 ctl upgrade 创建。
         bootstrap_first_install(session, ssh_target, &sha256, staging_path).await?;
     }
+    // backend CA：正式 CA 优先；rex migrate 迁移主机沿用 Node 自签叶子（pin 校验）。
+    let ca_probe = ssh::exec(
+        session,
+        ssh_target,
+        &format!(
+            "if test -f {CREDENTIALS_DIR}/ca.crt; then echo ca; else echo leaf; fi"
+        ),
+        None,
+        Duration::from_secs(15),
+        None,
+    )
+    .await?;
+    let backend_ca = format!(
+        "{CREDENTIALS_DIR}/{}",
+        if ca_probe.stdout.trim() == "ca" {
+            "ca.crt"
+        } else {
+            "server.crt"
+        }
+    );
     let command = format!(
         "upgrade --package {} --sha256 {} --versions-dir {} --link {} \
---backend-protocol https --backend-ca {}/ca.crt -- \
+--backend-protocol https --backend-ca {backend_ca} -- \
 {{version_dir}}/bin/remote-execd daemon --cert {}/server.crt --key {}/server.key \
 --token-sha256-file {}/token.sha256",
         ssh::shell_quote(&format!("{staging_path}/package.tar.gz")),
         sha256,
         VERSIONS_DIR,
         CURRENT_LINK,
-        CREDENTIALS_DIR,
         CREDENTIALS_DIR,
         CREDENTIALS_DIR,
         CREDENTIALS_DIR,

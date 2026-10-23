@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["daemon", "rex", "ssh"]
+members = ["daemon", "rex", "ssh", "tls"]
 
 [workspace.package]
 edition = "2024"

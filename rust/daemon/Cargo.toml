@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 remote-exec-ssh = { path = "../ssh" }
+remote-exec-tls = { path = "../tls" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

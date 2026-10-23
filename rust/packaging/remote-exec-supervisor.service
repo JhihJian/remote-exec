@@ -1,4 +1,4 @@
-# remote-exec supervisor 生产模板（占位路径，部署时替换为本机安装前缀）。
+# remote-exec supervisor 生产模板（占位符由安装器替换：@PORT@、@RUN_USER@）。
 #
 # - ExecStart 经 /opt/remote-exec/current/bin/remote-execd 间接引用当前版本，
 #   current 符号链接由 `remote-execd ctl upgrade` 原子更新，指向
@@ -20,7 +20,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/opt/remote-exec/current/bin/remote-execd supervisor --host 0.0.0.0 --port 8791 --control /run/remote-exec/supervisor.sock --state /etc/remote-exec/supervisor-state.json --run-user remote-exec
+ExecStart=/opt/remote-exec/current/bin/remote-execd supervisor --host 0.0.0.0 --port @PORT@ --control /run/remote-exec/supervisor.sock --state /etc/remote-exec/supervisor-state.json --run-user @RUN_USER@
 RuntimeDirectory=remote-exec
 Restart=on-failure
 RestartSec=2

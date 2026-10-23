@@ -28,16 +28,8 @@ async fn connect_tls(
     servername: Option<&str>,
     ca_pem: &str,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, AnyError> {
-    let mut roots = rustls::RootCertStore::empty();
-    let mut reader = std::io::BufReader::new(ca_pem.as_bytes());
-    for cert in rustls_pemfile::certs(&mut reader) {
-        roots.add(cert?)?;
-    }
-    let config = Arc::new(
-        rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth(),
-    );
+    // 共享信任策略：CA 首证书同时作为 pin（兼容 Node 布局自签叶子）与信任锚。
+    let config = Arc::new(remote_exec_tls::pinned_or_ca_client_config(ca_pem)?);
     let name = servername.filter(|s| !s.is_empty()).unwrap_or(host);
     let server_name = ServerName::try_from(name.to_owned())
         .map_err(|e| format!("无效 servername \"{name}\": {e}"))?;

@@ -8,6 +8,7 @@ mod prompt;
 mod smoke;
 
 mod ui;
+mod migrate;
 mod upgrade;
 
 use crate::client::{Call, Interrupt};
@@ -26,7 +27,9 @@ const HELP: &str = "用法: rex [主机名]                交互式会话（缺
   rex deploy [--port 8791] [--identity 私钥] [--package tar.gz] [--ssh-port 22] [--host-key 指纹] [name=]user@IPv4...
                                    SSH 直连部署并登记主机
   rex upgrade <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] [--identity 私钥] [--host-key 指纹] [--retire-wait-secs 300] [--rollback]
-                                   两段式升级目标 daemon（需可直连 SSH）";
+                                   两段式升级目标 daemon（需可直连 SSH）
+  rex migrate <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] [--identity 私钥] [--host-key 指纹]
+  rex migrate <主机> --rollback     Node → Rust 布局迁移与回滚（需可直连 SSH）";
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -95,6 +98,14 @@ fn main() {
         "upgrade" => {
             let rt = runtime();
             match rt.block_on(upgrade::run(&store, &args[1..])) {
+                Ok(code) if code != 0 => std::process::exit(code),
+                Ok(_) => {}
+                Err(e) => fail(&e),
+            }
+        }
+        "migrate" => {
+            let rt = runtime();
+            match rt.block_on(migrate::run(&store, &args[1..])) {
                 Ok(code) if code != 0 => std::process::exit(code),
                 Ok(_) => {}
                 Err(e) => fail(&e),

@@ -18,7 +18,7 @@ Rust 原型用于验证小于 2MB 的离线部署包：Linux 目标机通过 SSH
 
 ## 模块职责
 
-服务实现位于 `prototype/rust-daemon/`。`main.rs` 解析配置、加载 TLS 凭据、监听端口和管理连接任务。`server.rs` 使用 Hyper 接收 HTTP 请求并移交经认证的 WebSocket 会话，`rpc.rs` 处理请求顺序、响应和断连取消。`exec.rs` 管理 Bash 子进程组，`files.rs` 管理常规文件和同目录临时文件。`auth.rs` 校验 token 哈希。
+服务实现位于 `rust/daemon/`。`main.rs` 解析配置、加载 TLS 凭据、监听端口和管理连接任务。`server.rs` 使用 Hyper 接收 HTTP 请求并移交经认证的 WebSocket 会话，`rpc.rs` 处理请求顺序、响应和断连取消。`exec.rs` 管理 Bash 子进程组，`files.rs` 管理常规文件和同目录临时文件。`auth.rs` 校验 token 哈希。
 
 Rustls/ring 承担 TLS，Tungstenite 承担 WebSocket 帧处理，Hyper 承担 HTTP/1.1 消息边界，Tokio 承担异步 I/O 和子进程。应用模块保持与正式服务相同的 TLS 与 token 权限边界。原型只监听 TLS，不提供明文远程接口。
 
@@ -41,7 +41,7 @@ bash scripts/build-rust-prototype.sh --address 192.0.2.10 --output-dir dist/rust
 
 输出包括：
 
-- `remote-exec-rust-prototype-linux-<arch>.tar.gz`：服务二进制、服务器证书、私钥、token 哈希、启动与安装脚本、systemd unit、target 清单、项目与依赖许可证。
+- `remote-exec-prototype-linux-<arch>.tar.gz`：服务二进制、服务器证书、私钥、token 哈希、启动与安装脚本、systemd unit、target 清单、项目与依赖许可证。
 - 相邻 `.sha256` 文件：整个包的 SHA-256。
 - `access/`：只留在部署端的 token 明文、可信服务器证书和客户端主机配置模板。
 - `size.json`：完整归档与解压后二进制的字节数。
@@ -52,20 +52,20 @@ bash scripts/build-rust-prototype.sh --address 192.0.2.10 --output-dir dist/rust
 
 ```bash
 cd dist/rust-device
-sha256sum --check remote-exec-rust-prototype-linux-arm64.tar.gz.sha256
-scp remote-exec-rust-prototype-linux-arm64.tar.gz user@192.0.2.10:/PRIVATE/STAGING/
+sha256sum --check remote-exec-prototype-linux-arm64.tar.gz.sha256
+scp remote-exec-prototype-linux-arm64.tar.gz user@192.0.2.10:/PRIVATE/STAGING/
 ```
 
 目标机离线解包、安装并前台启动：
 
 ```bash
 cd /PRIVATE/STAGING
-tar -xzf remote-exec-rust-prototype-linux-arm64.tar.gz
-bash install.sh --systemd /ABSOLUTE/PATH/remote-exec-rust-prototype
-systemctl status remote-exec-rust-prototype.service --no-pager
+tar -xzf remote-exec-prototype-linux-arm64.tar.gz
+bash install.sh --systemd /ABSOLUTE/PATH/remote-execd
+systemctl status remote-exec-prototype.service --no-pager
 ```
 
-安装器复制到独立的新目录，不修改正式服务。`run.sh` 监听 `0.0.0.0`，使用当前用户权限运行。`--systemd` 仅允许 root，会安装并启用系统级 `remote-exec-rust-prototype.service`。目标架构由包内 target 清单与 `uname` 双重校验。客户端修改 `access/hosts.json` 的 CA 和 token 路径，再合并到现有客户端配置。TLS 连接必须信任指定证书并匹配证书 SAN。
+安装器复制到独立的新目录，不修改正式服务。`run.sh` 监听 `0.0.0.0`，使用当前用户权限运行。`--systemd` 仅允许 root，会安装并启用系统级 `remote-exec-prototype.service`。目标架构由包内 target 清单与 `uname` 双重校验。客户端修改 `access/hosts.json` 的 CA 和 token 路径，再合并到现有客户端配置。TLS 连接必须信任指定证书并匹配证书 SAN。
 
 ### SSH 管道安装
 
@@ -79,18 +79,18 @@ OUTPUT_DIR=dist/rust-nm24
 bash scripts/build-rust-prototype.sh --address "$TARGET_ADDRESS" --port "$TEST_PORT" \
   --target aarch64-unknown-linux-musl --cc <aarch64-musl-cc> --linker <aarch64-musl-linker> \
   --output-dir "$OUTPUT_DIR"
-cat "$OUTPUT_DIR/remote-exec-rust-prototype-linux-arm64.tar.gz" | \
-  ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-rust.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
+cat "$OUTPUT_DIR/remote-exec-prototype-linux-arm64.tar.gz" | \
+  ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-proto.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-prototype'
 ```
 
-该命令使用免密 SSH，不依赖目标机公网访问；目标只执行 Bash、tar 和 systemd。`--systemd` 会安装并启用 `remote-exec-rust-prototype.service`，服务监听 `0.0.0.0:18791`。NM105 的当前 Node daemon 以 `172.16.126.0/24` 为 relay 白名单，使用目标包 `access/` 中的证书和 token 后，可转发 `exec`、`exec.stream`、`file.read` 和 `file.write`。SSH 断点续传仍属于后续部署流程。
+该命令使用免密 SSH，不依赖目标机公网访问；目标只执行 Bash、tar 和 systemd。`--systemd` 会安装并启用 `remote-exec-prototype.service`，服务监听 `0.0.0.0:18791`。NM105 的当前 Node daemon 以 `172.16.126.0/24` 为 relay 白名单，使用目标包 `access/` 中的证书和 token 后，可转发 `exec`、`exec.stream`、`file.read` 和 `file.write`。SSH 断点续传仍属于后续部署流程。
 
 ## 验证与测量
 
 ```bash
-cargo fmt --manifest-path prototype/rust-daemon/Cargo.toml -- --check
-cargo clippy --locked --manifest-path prototype/rust-daemon/Cargo.toml --all-targets -- -D warnings
-cargo test --locked --manifest-path prototype/rust-daemon/Cargo.toml
+cargo fmt --manifest-path rust/daemon/Cargo.toml -- --check
+cargo clippy --locked --manifest-path rust/daemon/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path rust/daemon/Cargo.toml
 node test/rust-prototype/runner.js
 bash test/rust-prototype/offline.sh
 ```

@@ -7,7 +7,7 @@ if [[ "${1:-}" == "--systemd" ]]; then
   SYSTEMD=1
   shift
 fi
-PREFIX="${1:-${HOME:?缺少 HOME}/.local/share/remote-exec-rust-prototype}"
+PREFIX="${1:-${HOME:?缺少 HOME}/.local/share/remote-exec-prototype}"
 (($# <= 1)) || { printf '用法：install.sh [--systemd] [绝对安装目录]\n' >&2; exit 2; }
 [[ "$PREFIX" == /* ]] || { printf '安装目录必须是绝对路径\n' >&2; exit 2; }
 [[ "$(uname -s)" == Linux ]] || { printf '原型仅支持 Linux\n' >&2; exit 1; }
@@ -27,10 +27,10 @@ if ((SYSTEMD)); then
   [[ "$(id -u)" == 0 ]] || { printf '--systemd 需要 root SSH 会话\n' >&2; exit 1; }
   command -v systemctl >/dev/null || { printf '--systemd 需要 systemctl\n' >&2; exit 1; }
   systemctl show --property=Version --value >/dev/null || { printf 'systemd 管理器不可用\n' >&2; exit 1; }
-  [[ -f "$SOURCE/remote-exec-rust.service" ]] || { printf '安装包缺少 systemd unit\n' >&2; exit 1; }
+  [[ -f "$SOURCE/remote-exec-prototype.service" ]] || { printf '安装包缺少 systemd unit\n' >&2; exit 1; }
 fi
 [[ ! -e "$PREFIX" ]] || { printf '安装目录已存在，请使用新目录，避免覆盖服务和凭据\n' >&2; exit 1; }
-"$SOURCE/remote-exec-rust-prototype" --help >/dev/null
+"$SOURCE/remote-execd" --help >/dev/null
 umask 077
 mkdir -p "$(dirname "$PREFIX")"
 STAGE="$(mktemp -d "$(dirname "$PREFIX")/.remote-exec-rust-install.XXXXXX")"
@@ -41,15 +41,15 @@ chmod 0600 "$STAGE/credentials/"*
 # -T 防止目标路径被并发创建后移动到其内部，-n 保留并发创建的目录。
 mv -T -n "$STAGE" "$PREFIX"
 [[ ! -d "$STAGE" ]] || { printf '目标目录在安装过程中已被创建\n' >&2; exit 1; }
-if ((SYSTEMD)); then
-  UNIT_CONTENT="$(<"$PREFIX/remote-exec-rust.service")"
+UNIT_CONTENT="$(<"$PREFIX/remote-exec-prototype.service")"
+  UNIT_CONTENT="$(<"$PREFIX/remote-exec-prototype.service")"
   UNIT_CONTENT="${UNIT_CONTENT//@PREFIX@/$PREFIX}"
-  printf '%s\n' "$UNIT_CONTENT" > /etc/systemd/system/remote-exec-rust-prototype.service
-  chmod 0644 /etc/systemd/system/remote-exec-rust-prototype.service
+  printf '%s\n' "$UNIT_CONTENT" > /etc/systemd/system/remote-exec-prototype.service
+  chmod 0644 /etc/systemd/system/remote-exec-prototype.service
   systemctl daemon-reload
-  systemctl enable --now remote-exec-rust-prototype.service
-  systemctl is-active --quiet remote-exec-rust-prototype.service || { printf 'systemd 服务启动失败\n' >&2; exit 1; }
-  printf '原型已离线安装并启用 systemd：%s\n服务：remote-exec-rust-prototype.service\n' "$PREFIX"
+  systemctl enable --now remote-exec-prototype.service
+  systemctl is-active --quiet remote-exec-prototype.service || { printf 'systemd 服务启动失败\n' >&2; exit 1; }
+  printf '原型已离线安装并启用 systemd：%s\n服务：remote-exec-prototype.service\n' "$PREFIX"
 else
   printf '原型已离线安装：%s\n启动：bash %q\n' "$PREFIX" "$PREFIX/run.sh"
 fi

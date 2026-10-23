@@ -21,8 +21,8 @@ struct Options {
     relay_allow: Vec<String>,
 }
 
-fn options() -> Result<Option<Options>, AnyError> {
-    let mut args = std::env::args().skip(1);
+fn options(args: &[String]) -> Result<Option<Options>, AnyError> {
+    let mut args = args.iter().map(String::as_str);
     let mut opts = Options {
         host: "127.0.0.1".into(),
         port: 8791,
@@ -34,24 +34,28 @@ fn options() -> Result<Option<Options>, AnyError> {
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             println!(
-                "独立 Rust 离线原型，仅 TLS，不替代正式 Node daemon\n--host <host> --port <port> --cert <pem> --key <pem> --token-sha256-file <file>"
+                "remote-execd 服务程序，仅 TLS\n\
+子命令:\n\
+  daemon      运行 daemon（默认，可省略）\n\
+  supervisor  运行固定入口 supervisor\n\
+daemon 参数: --host <host> --port <port> --cert <pem> --key <pem> --token-sha256-file <file> [--relay-allow <cidr>]..."
             );
             return Ok(None);
         }
         if !matches!(
-            arg.as_str(),
+            arg,
             "--host" | "--port" | "--cert" | "--key" | "--token-sha256-file" | "--relay-allow"
         ) {
             return Err(format!("未知参数: {arg}").into());
         }
         let value = args.next().ok_or_else(|| format!("{arg} 需要值"))?;
-        match arg.as_str() {
-            "--host" => opts.host = value,
+        match arg {
+            "--host" => opts.host = value.into(),
             "--port" => opts.port = value.parse()?,
-            "--cert" => opts.cert = value,
-            "--key" => opts.key = value,
-            "--token-sha256-file" => opts.hash = value,
-            "--relay-allow" => opts.relay_allow.push(value),
+            "--cert" => opts.cert = value.into(),
+            "--key" => opts.key = value.into(),
+            "--token-sha256-file" => opts.hash = value.into(),
+            "--relay-allow" => opts.relay_allow.push(value.into()),
             _ => unreachable!(),
         }
     }
@@ -64,10 +68,19 @@ fn options() -> Result<Option<Options>, AnyError> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), AnyError> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if arguments.first().map(String::as_str) == Some("--supervisor") {
-        return supervisor::run(&arguments[1..]).await;
+    match arguments.first().map(String::as_str) {
+        Some("supervisor") => return supervisor::run(&arguments[1..]).await,
+        Some("daemon") | None => {}
+        Some(other) if other.starts_with('-') => {}
+        Some(other) => {
+            return Err(format!("未知子命令: {other}（支持 daemon 或 supervisor）").into());
+        }
     }
-    let Some(opts) = options()? else {
+    let opts_args = match arguments.first().map(String::as_str) {
+        Some("daemon") | Some("supervisor") => &arguments[1..],
+        _ => &arguments[..],
+    };
+    let Some(opts) = options(opts_args)? else {
         return Ok(());
     };
     let hash = auth::load_hash(&std::fs::read_to_string(opts.hash)?)?;
@@ -83,7 +96,7 @@ async fn main() -> Result<(), AnyError> {
     let acceptor = TlsAcceptor::from(Arc::new(tls));
     let listener = TcpListener::bind((opts.host.as_str(), opts.port)).await?;
     eprintln!(
-        "独立 Rust 原型 listening {} (TLS only)",
+        "remote-execd listening {} (TLS only)",
         listener.local_addr()?
     );
     let permits = Arc::new(tokio::sync::Semaphore::new(64));
@@ -109,7 +122,7 @@ async fn main() -> Result<(), AnyError> {
             }
         }
     }
-    // Prototype shutdown cancels active work, it does not implement supervisor draining.
+    // SIGTERM/SIGINT 触发排空关闭；排空语义在 lifecycle 模块实现。
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     Ok(())

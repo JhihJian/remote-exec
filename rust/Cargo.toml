@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["daemon"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

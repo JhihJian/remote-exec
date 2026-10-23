@@ -26,8 +26,8 @@ Rust 离线原型使用部署端准备好的完整静态包，通过 SSH 标准�
 
 ```bash
 TARGET_SSH=root@host
-PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-arm64.tar.gz
-cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-rust.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
+PACKAGE=dist/rust-device/remote-exec-prototype-linux-arm64.tar.gz
+cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-proto.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-prototype'
 ```
 
 该路径已在 Linux x86_64 实机验证，并在 openEuler ARM64 实机验证。完整包保持小于 `2 MB`，目标机不需要 Node、OpenSSL、Cargo 或公网访问。Rust 原型 root 安装脚本可生成并启用独立 systemd unit；Node 正式安装器仍负责自包含 Node 运行时和正式发布验收。

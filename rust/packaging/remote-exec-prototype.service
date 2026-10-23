@@ -1,5 +1,5 @@
 [Unit]
-Description=remote-exec Rust prototype
+Description=remote-exec prototype daemon
 After=network-online.target
 Wants=network-online.target
 

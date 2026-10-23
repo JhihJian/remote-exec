@@ -56,7 +56,7 @@ for tool in cargo rustc "$RUST_CC" "$RUST_LINKER" openssl tar gzip sha256sum rea
 done
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
-ARCHIVE="$OUTPUT_DIR/remote-exec-rust-prototype-linux-${ARCH}.tar.gz"
+ARCHIVE="$OUTPUT_DIR/remote-exec-prototype-linux-${ARCH}.tar.gz"
 [[ ! -e "$ARCHIVE" && ! -e "$OUTPUT_DIR/access" ]] || { printf '输出目录已有部署资产，请指定新目录，避免轮换既有凭据\n' >&2; exit 1; }
 CC_TARGET_ENV="${TARGET//-/_}"
 export "CC_${CC_TARGET_ENV}=$RUST_CC"
@@ -64,8 +64,8 @@ TARGET_ENV="${TARGET^^}"
 TARGET_ENV="${TARGET_ENV//-/_}"
 export "CARGO_TARGET_${TARGET_ENV}_LINKER=$RUST_LINKER"
 cargo build --release --locked \
-  --target "$TARGET" --manifest-path "$PROJECT_ROOT/prototype/rust-daemon/Cargo.toml"
-BINARY="$PROJECT_ROOT/prototype/rust-daemon/target/$TARGET/release/remote-exec-rust-prototype"
+  --target "$TARGET" --manifest-path "$PROJECT_ROOT/rust/daemon/Cargo.toml"
+BINARY="$PROJECT_ROOT/rust/target/$TARGET/release/remote-execd"
 if readelf -l "$BINARY" | grep -q 'INTERP' || readelf -d "$BINARY" | grep -q 'NEEDED'; then
   printf '构建产物包含动态解释器或动态库依赖\n' >&2; exit 1
 fi
@@ -73,14 +73,14 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 umask 077
 mkdir -p "$STAGE/package/credentials" "$STAGE/access"
-install -m 0755 "$BINARY" "$STAGE/package/remote-exec-rust-prototype"
-install -m 0755 "$PROJECT_ROOT/prototype/packaging/run.sh" "$STAGE/package/run.sh"
-install -m 0755 "$PROJECT_ROOT/prototype/packaging/install.sh" "$STAGE/package/install.sh"
+install -m 0755 "$BINARY" "$STAGE/package/remote-execd"
+install -m 0755 "$PROJECT_ROOT/rust/packaging/run.sh" "$STAGE/package/run.sh"
+install -m 0755 "$PROJECT_ROOT/rust/packaging/install.sh" "$STAGE/package/install.sh"
 install -m 0644 "$PROJECT_ROOT/LICENSE" "$STAGE/package/LICENSE"
-install -m 0644 "$PROJECT_ROOT/prototype/packaging/remote-exec-rust.service" "$STAGE/package/remote-exec-rust.service"
+install -m 0644 "$PROJECT_ROOT/rust/packaging/remote-exec-prototype.service" "$STAGE/package/remote-exec-prototype.service"
 printf '%s\n' "$TARGET" > "$STAGE/package/target"
 cargo metadata --offline --locked --format-version 1 --filter-platform "$TARGET" \
-  --manifest-path "$PROJECT_ROOT/prototype/rust-daemon/Cargo.toml" > "$STAGE/metadata.json"
+  --manifest-path "$PROJECT_ROOT/rust/daemon/Cargo.toml" > "$STAGE/metadata.json"
 node - "$STAGE/metadata.json" "$STAGE/package/THIRD_PARTY_LICENSES.txt" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -97,12 +97,12 @@ fs.writeFileSync(process.argv[3], sections.join('\n\n') + '\n');
 NODE
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
   -keyout "$STAGE/ca.key" -out "$STAGE/ca.crt" \
-  -subj '/CN=remote-exec-rust-prototype CA' \
+  -subj '/CN=remote-exec-prototype CA' \
   -addext 'basicConstraints=critical,CA:TRUE' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign' >/dev/null 2>&1
 openssl req -new -newkey rsa:2048 -nodes \
   -keyout "$STAGE/package/credentials/server.key" -out "$STAGE/server.csr" \
-  -subj '/CN=remote-exec-rust-prototype' >/dev/null 2>&1
+  -subj '/CN=remote-exec-prototype' >/dev/null 2>&1
 printf 'basicConstraints=critical,CA:FALSE\nsubjectAltName=%s\n' "$SAN" > "$STAGE/server.ext"
 openssl x509 -req -days 365 -in "$STAGE/server.csr" \
   -CA "$STAGE/ca.crt" -CAkey "$STAGE/ca.key" -CAcreateserial \
@@ -111,7 +111,7 @@ openssl rand -hex 32 | tr -d '\n' > "$STAGE/access/token.txt"
 sha256sum "$STAGE/access/token.txt" | awk '{print $1}' > "$STAGE/package/credentials/token.sha256"
 cp "$STAGE/ca.crt" "$STAGE/access/server.crt"
 printf '%s\n' "$PORT" > "$STAGE/package/port"
-cp "$PROJECT_ROOT/prototype/packaging/README.txt" "$STAGE/package/README.txt"
+cp "$PROJECT_ROOT/rust/packaging/README.txt" "$STAGE/package/README.txt"
 node - "$STAGE/package" "$STAGE/access" "$ADDRESS" "$PORT" "$TARGET" "$(rustc --version)" "$ARCH" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');

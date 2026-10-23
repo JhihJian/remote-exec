@@ -9,7 +9,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "../..");
-const BINARY = process.env.RUST_SUPERVISOR_BINARY || path.join(ROOT, "prototype/rust-daemon/target/x86_64-unknown-linux-musl/release/remote-exec-rust-prototype");
+const BINARY = process.env.RUST_SUPERVISOR_BINARY || path.join(ROOT, "rust/target/x86_64-unknown-linux-musl/release/remote-execd");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const listen = (server) => new Promise((resolve, reject) => {
   server.once("error", reject);
@@ -104,7 +104,7 @@ async function main() {
     await closeServer(probe);
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "rust-supervisor-test-"));
     const controlPath = path.join(tempDir, "control.sock");
-    supervisor = spawn(BINARY, ["--supervisor", "--port", String(supervisorPort), "--control", controlPath,
+    supervisor = spawn(BINARY, ["supervisor", "--port", String(supervisorPort), "--control", controlPath,
       "--old-host", old.backend.host, "--old-port", String(old.backend.port)], { stdio: ["ignore", "pipe", "pipe"] });
     let log = "";
     supervisor.stderr.on("data", (chunk) => { log += chunk.toString(); });

@@ -61,8 +61,8 @@ Rust 原型的完整服务器包支持 x86_64 和 ARM64，构建门禁为严格�
 
 ```bash
 TARGET_SSH=root@172.16.126.24
-PACKAGE=dist/rust-device/remote-exec-rust-prototype-linux-arm64.tar.gz
-cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-rust.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
+PACKAGE=dist/rust-device/remote-exec-prototype-linux-arm64.tar.gz
+cat "$PACKAGE" | ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d /tmp/remote-exec-proto.XXXXXX); mkdir -m 700 "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-prototype'
 ```
 
 当前命令是单次传输，断线后需要重新传包。Rust 包现已支持 x86_64 与 ARM64，并可由 root 安装器生成 systemd unit；SSH 断点续传、远端完整性验收仍属于后续部署流程。

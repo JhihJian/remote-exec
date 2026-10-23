@@ -38,9 +38,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: 检查 Rust 源码
         run: |
-          cargo fmt --manifest-path prototype/rust-daemon/Cargo.toml -- --check
-          cargo clippy --locked --manifest-path prototype/rust-daemon/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path prototype/rust-daemon/Cargo.toml
+          cargo fmt --manifest-path rust/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path rust/Cargo.toml
       - name: 构建完整包并检查 2MB 门禁
         run: bash scripts/build-rust-prototype.sh --address 127.0.0.1
       - name: 验证现有客户端和异常行为

@@ -48,7 +48,7 @@ flowchart TB
         rpc -->|连接与请求计数、注册强制关闭| lifecycle
         operations ~~~ foundation
     end
-    subgraph rust["Rust 原型进程 · prototype/rust-daemon/src/"]
+    subgraph rust["Rust 原型进程 · rust/daemon/src/"]
         rmain["main.rs<br/>TLS 凭据 · 监听 · 连接任务"]
         rserver["server.rs<br/>HTTP 文件流 · WSS 升级"]
         rrpc["rpc.rs<br/>会话 · 请求顺序 · 取消"]
@@ -106,14 +106,14 @@ Rust 图中调用向下委托，同层协作由明确连线表达，原型与 No
 
 | 模块 | 职责 | 代码映射 |
 | --- | --- | --- |
-| Rust 启动组装 | 凭据、TLS、监听、任务及退出 | `prototype/rust-daemon/src/main.rs` |
-| Rust 协议入口 | HTTP 请求、鉴权、上传下载、WSS 移交 | `prototype/rust-daemon/src/server.rs` |
-| Rust RPC 会话 | 顺序分发、事件发送及断连取消 | `prototype/rust-daemon/src/rpc.rs` |
-| Rust 命令操作 | Bash 进程组、双流、超时与清理 | `prototype/rust-daemon/src/exec.rs` |
-| Rust 文件操作 | 文件 RPC、临时文件和原子替换 | `prototype/rust-daemon/src/files.rs` |
-| Rust token 校验 | 哈希加载、Bearer 校验 | `prototype/rust-daemon/src/auth.rs` |
+| Rust 启动组装 | 凭据、TLS、监听、任务及退出 | `rust/daemon/src/main.rs` |
+| Rust 协议入口 | HTTP 请求、鉴权、上传下载、WSS 移交 | `rust/daemon/src/server.rs` |
+| Rust RPC 会话 | 顺序分发、事件发送及断连取消 | `rust/daemon/src/rpc.rs` |
+| Rust 命令操作 | Bash 进程组、双流、超时与清理 | `rust/daemon/src/exec.rs` |
+| Rust 文件操作 | 文件 RPC、临时文件和原子替换 | `rust/daemon/src/files.rs` |
+| Rust token 校验 | 哈希加载、Bearer 校验 | `rust/daemon/src/auth.rs` |
 
-构建包由 `scripts/build-rust-prototype.sh` 与 `prototype/packaging/` 生成，协议和禁网验证位于 `test/rust-prototype/`。运行条件、测量口径和剩余迁移范围见 [Rust 离线原型](../operations/RUST_OFFLINE_PROTOTYPE.md)。现有顶层能力及其测试归属保持正式 Node 实现。
+构建包由 `scripts/build-rust-prototype.sh` 与 `rust/packaging/` 生成，协议和禁网验证位于 `test/rust-prototype/`。运行条件、测量口径和剩余迁移范围见 [Rust 离线原型](../operations/RUST_OFFLINE_PROTOTYPE.md)。现有顶层能力及其测试归属保持正式 Node 实现。
 
 ## 一键安装能力
 

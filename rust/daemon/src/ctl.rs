@@ -338,6 +338,17 @@ fn upgrade(socket: &Path, args: &[String]) -> Result<Value, String> {
     let id = generation_id(&digest);
     let version_dir = options.versions_dir.join(&id);
     if version_dir.exists() {
+        // 同秒内重复升级（id 含秒级时间戳）或对已 active 版本重放：
+        // 目录内容标记一致且已是 active 时幂等成功，否则拒绝。
+        let active = control(socket, &json!({"method": "status"}))
+            .ok()
+            .and_then(|status| status.get("active").and_then(Value::as_str).map(str::to_owned));
+        let marker_ok = fs::read_to_string(version_dir.join(".package-sha256"))
+            .map(|text| text.trim() == expected)
+            .unwrap_or(false);
+        if active.as_deref() == Some(id.as_str()) && marker_ok {
+            return Ok(json!({"id": id, "state": "active", "idempotent": true}));
+        }
         return Err(format!("版本目录已存在: {}", version_dir.display()));
     }
     let prepare = (|| {
@@ -347,7 +358,10 @@ fn upgrade(socket: &Path, args: &[String]) -> Result<Value, String> {
             .map_err(|error| format!("创建 {} 失败: {error}", version_dir.display()))?;
         fs::set_permissions(&version_dir, fs::Permissions::from_mode(0o755))
             .map_err(|error| format!("设置 {} 权限失败: {error}", version_dir.display()))?;
-        unpack_package(&package_path, &version_dir)
+        unpack_package(&package_path, &version_dir)?;
+        // 内容标记：同 id 重放时判定目录与包一致。
+        fs::write(version_dir.join(".package-sha256"), format!("{digest}\n"))
+            .map_err(|error| format!("写入 {} 失败: {error}", version_dir.join(".package-sha256").display()))
     })();
     if let Err(error) = prepare {
         cleanup_version_dir(&version_dir);

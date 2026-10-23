@@ -409,7 +409,7 @@ echo 'Node 服务端口未就绪' >&2; exit 1",
     }
     verify_with_existing_credentials(store, display, &run_user).await?;
     output(&format!(
-        "{display} 已回滚到 Node 服务；Rust 布局保留，可重新执行 rex migrate\n"
+        "{display} 已回滚到 Node 服务（Rust 布局已清理）；可重新执行 rex migrate\n"
     ));
     Ok(0)
 }

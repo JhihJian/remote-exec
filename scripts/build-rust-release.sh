@@ -175,7 +175,7 @@ done
 node - "$OUTPUT_DIR/size.json" "$VERSION" "$LIMIT" "${RESULTS[@]}" <<'NODE'
 const fs = require('node:fs');
 const [out, version, limit, ...results] = process.argv.slice(2);
-const artifacts = results.map(line => {
+const incoming = results.map(line => {
   const [arch, archiveBytes, archive, binaryBytes] = line.split(' ');
   const component = archive.startsWith('remote-exec') ? 'daemon' : 'rex';
   return {
@@ -183,6 +183,11 @@ const artifacts = results.map(line => {
     sizeGatePassed: component === 'rex' || Number(archiveBytes) < Number(limit),
   };
 });
+// 单架构运行只刷新该架构条目，保留其他架构的历史记录。
+const previous = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : { artifacts: [] };
+const artifacts = incoming.concat(previous.artifacts.filter(
+  old => !incoming.some(fresh => fresh.component === old.component && fresh.arch === old.arch)
+));
 fs.writeFileSync(out, JSON.stringify({ version, limitBytes: Number(limit), artifacts }, null, 2) + '\n');
 NODE
 printf '\n版本 %s：产物与 size.json 已写入 %s\n' "$VERSION" "$OUTPUT_DIR"

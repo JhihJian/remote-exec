@@ -18,40 +18,46 @@ pub(crate) const CONTROL_SOCKET: &str = "/run/remote-exec/supervisor.sock";
 pub(crate) const CREDENTIALS_DIR: &str = "/etc/remote-exec/credentials";
 const CTL_BINARY: &str = "/opt/remote-exec/current/bin/remote-execd";
 
-struct Options {
-    host: String,
-    package: String,
-    ssh_user: String,
-    ssh_port: u16,
-    identity: Option<String>,
-    host_key: Option<String>,
-    retire_wait: u64,
-    rollback: bool,
+/// 公共 SSH 连接参数（位置参数主机与 --ssh-user/--ssh-port/--identity/--host-key）。
+pub(crate) struct SshArgs {
+    pub host: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub identity: Option<String>,
+    pub host_key: Option<String>,
 }
 
-fn parse_options(args: &[String]) -> Result<Options, String> {
+/// 读取 args[index+1] 作为 flag 的值（拒绝把下一个 flag 当值）。
+pub(crate) fn arg_value(args: &[String], index: usize, flag: &str) -> Result<String, String> {
+    let value = args.get(index + 1).ok_or(format!("{flag} 缺少值"))?;
+    if value.starts_with("--") {
+        return Err(format!("{flag} 缺少值"));
+    }
+    Ok(value.clone())
+}
+
+/// 解析公共 SSH 参数；extra 消费子命令专属选项，读取值后自行推进 *index。
+pub(crate) fn parse_ssh_args(
+    args: &[String],
+    help: &str,
+    verb: &str,
+    mut extra: impl FnMut(&str, &mut usize) -> Result<(), String>,
+) -> Result<SshArgs, String> {
     let mut host: Option<String> = None;
-    let mut package: Option<String> = None;
     let mut ssh_user = "root".to_owned();
     let mut ssh_port: u16 = 22;
     let mut identity = None;
     let mut host_key = None;
-    let mut retire_wait: u64 = 300;
-    let mut rollback = false;
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
         let value = |index: &mut usize| -> Result<String, String> {
-            let value = args.get(*index + 1).ok_or(format!("{arg} 缺少值"))?.clone();
-            if value.starts_with("--") {
-                return Err(format!("{arg} 缺少值"));
-            }
+            let value = arg_value(args, *index, arg)?;
             *index += 1;
             Ok(value)
         };
         match arg {
-            "--help" | "-h" => return Err(format!("{HELP}\n")),
-            "--package" => package = Some(value(&mut index)?),
+            "--help" | "-h" => return Err(format!("{help}\n")),
             "--ssh-user" => ssh_user = value(&mut index)?,
             "--ssh-port" => {
                 ssh_port = value(&mut index)?
@@ -68,13 +74,7 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
                 identity = Some(pem);
             }
             "--host-key" => host_key = Some(value(&mut index)?),
-            "--retire-wait-secs" => {
-                retire_wait = value(&mut index)?
-                    .parse()
-                    .map_err(|_| "retire-wait-secs 必须为非负整数".to_owned())?;
-            }
-            "--rollback" => rollback = true,
-            other if other.starts_with("--") => return Err(format!("未知参数: {other}")),
+            other if other.starts_with("--") => extra(other, &mut index)?,
             other => {
                 if host.replace(other.to_owned()).is_some() {
                     return Err(format!("重复主机: {other}"));
@@ -83,17 +83,13 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         }
         index += 1;
     }
-    let host = host.ok_or(format!("请指定要升级的主机\n{HELP}"))?;
-    let package = package.unwrap_or_default();
-    Ok(Options {
+    let host = host.ok_or(format!("请指定要{verb}的主机\n{help}"))?;
+    Ok(SshArgs {
         host,
-        package,
         ssh_user,
         ssh_port,
         identity,
         host_key,
-        retire_wait,
-        rollback,
     })
 }
 
@@ -147,13 +143,6 @@ async fn trust_fingerprint(store: &Store, common: &SshCommon) -> Result<String, 
         .save_fingerprint(&record, &fingerprint)
         .map_err(|e| e.to_string())?;
     Ok(fingerprint)
-}
-
-impl Options {
-    /// SSH 目标地址（run() 已将 options.host 解析为 hosts 条目的真实地址）。
-    fn host_for_ssh(&self) -> &str {
-        &self.host
-    }
 }
 
 /// 连接并执行 drive，自动处理密码/sudo 重试与 SIGINT；失败时返回退出码。
@@ -216,7 +205,12 @@ where
     }
 }
 
-async fn ctl(session: &ssh::Session, target: &SshTarget, args: &str) -> Result<Value, String> {
+/// 经 supervisor 控制套接字执行 ctl 子命令，解析 JSON 输出。
+pub(crate) async fn ctl(
+    session: &ssh::Session,
+    target: &SshTarget,
+    args: &str,
+) -> Result<Value, String> {
     let command = format!(
         "{} ctl --control {} {}",
         CTL_BINARY, CONTROL_SOCKET, args
@@ -249,63 +243,146 @@ async fn ctl_raw(session: &ssh::Session, target: &SshTarget, args: &str) -> Resu
     Ok(())
 }
 
+/// 远端 /tmp 暂存目录（0700），前缀区分用途。
+pub(crate) async fn mktemp_staging(
+    session: &ssh::Session,
+    target: &SshTarget,
+    name: &str,
+) -> Result<String, String> {
+    let prefix = format!("/tmp/remote-exec-{name}");
+    let outcome = ssh::exec(
+        session,
+        target,
+        &format!("umask 077; mktemp -d {prefix}.XXXXXXXX"),
+        None,
+        Duration::from_secs(30),
+        None,
+    )
+    .await?;
+    let path = outcome.stdout.trim().to_owned();
+    if outcome.code != 0
+        || !path.starts_with(&format!("{prefix}."))
+        || path.len() != prefix.len() + 9
+    {
+        return Err("无法创建暂存目录".into());
+    }
+    Ok(path)
+}
+
+/// 删除远端暂存目录（尽力而为，失败不阻断主流程）。
+pub(crate) async fn remove_staging(session: &ssh::Session, target: &SshTarget, path: &str) {
+    let _ = ssh::exec(
+        session,
+        target,
+        &format!("rm -rf -- {}", ssh::shell_quote(path)),
+        None,
+        Duration::from_secs(15),
+        None,
+    )
+    .await;
+}
+
+pub(crate) fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 解包发布包到 versions/<generation> 并建立 current 链接（要求目录不存在）。
+pub(crate) async fn unpack_generation(
+    session: &ssh::Session,
+    target: &SshTarget,
+    generation: &str,
+    package: &str,
+) -> Result<(), String> {
+    let script = format!(
+        "set -e; mkdir -p {VERSIONS_DIR} && mkdir -p {VERSIONS_DIR}/{generation} && \
+tar -xzf {package} -C {VERSIONS_DIR}/{generation} && \
+chmod -R a+rX,go-w {VERSIONS_DIR}/{generation} && \
+test -x {VERSIONS_DIR}/{generation}/bin/remote-execd && \
+ln -sfn {VERSIONS_DIR}/{generation} {CURRENT_LINK}",
+        package = ssh::shell_quote(package),
+    );
+    let outcome =
+        ssh::exec(session, target, &script, None, Duration::from_secs(120), None).await?;
+    if outcome.code != 0 {
+        return Err(format!(
+            "解包失败（退出码 {}）: {}",
+            outcome.code,
+            outcome.stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
 pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
-    let mut options = parse_options(args)?;
-    let entry = store.host(&options.host).map_err(|e| e.to_string())?;
+    let mut package = String::new();
+    let mut retire_wait: u64 = 300;
+    let mut rollback = false;
+    let parsed = parse_ssh_args(args, HELP, "升级", |flag, index| {
+        match flag {
+            "--package" => {
+                package = arg_value(args, *index, flag)?;
+                *index += 1;
+            }
+            "--retire-wait-secs" => {
+                retire_wait = arg_value(args, *index, flag)?
+                    .parse()
+                    .map_err(|_| "retire-wait-secs 必须为非负整数".to_owned())?;
+                *index += 1;
+            }
+            "--rollback" => rollback = true,
+            other => return Err(format!("未知参数: {other}")),
+        }
+        Ok(())
+    })?;
+    let entry = store.host(&parsed.host).map_err(|e| e.to_string())?;
     if entry.via.is_some() {
         return Err(format!(
             "\"{}\" 经网关中转，SSH 不可直连；网关主机升级将在 Phase 4/5 支持",
-            options.host
+            parsed.host
         ));
     }
-    if options.package.is_empty() && !options.rollback {
+    if package.is_empty() && !rollback {
         return Err(format!("缺少 --package <tar.gz>\n{HELP}"));
     }
-    options.host = entry.host.clone();
     // rollback 不需要包；正常升级先本地校验（含 sha256 兄弟文件）避免上传损坏包。
-    let bundle = if options.rollback {
+    let bundle = if rollback {
         None
     } else {
-        if options.package.is_empty() {
-            return Err(format!("缺少 --package <tar.gz>\n{HELP}"));
-        }
-        Some(bundle::resolve_raw(&options.package)?)
+        Some(bundle::resolve_raw(&package)?)
     };
-    let result = upgrade_host(store, &options, bundle.as_ref()).await;
+    let common = SshCommon {
+        display: entry.host.clone(),
+        host: entry.host.clone(),
+        ssh_user: parsed.ssh_user.clone(),
+        ssh_port: parsed.ssh_port,
+        identity: parsed.identity.clone(),
+        host_key: parsed.host_key.clone(),
+    };
+    let bundle_ref = bundle.as_ref();
+    let common_ref = &common;
+    let result = drive_with_retry(store, common_ref, "升级", |ssh_target| {
+        async move { drive_upgrade(&ssh_target, common_ref, bundle_ref, retire_wait).await }
+    })
+    .await;
     if let Some(bundle) = bundle {
         bundle.cleanup();
     }
     result
 }
 
-async fn upgrade_host(
-    store: &Store,
-    options: &Options,
-    bundle: Option<&bundle::RawBundle>,
-) -> Result<i32, String> {
-    let common = SshCommon {
-        display: options.host.clone(),
-        host: options.host_for_ssh().to_owned(),
-        ssh_user: options.ssh_user.clone(),
-        ssh_port: options.ssh_port,
-        identity: options.identity.clone(),
-        host_key: options.host_key.clone(),
-    };
-    drive_with_retry(store, &common, "升级", |ssh_target| async move {
-        drive_upgrade(&ssh_target, options, bundle).await
-    })
-    .await
-}
-
 async fn drive_upgrade(
     ssh_target: &SshTarget,
-    options: &Options,
+    common: &SshCommon,
     bundle: Option<&bundle::RawBundle>,
+    retire_wait: u64,
 ) -> Result<i32, String> {
     let session = ssh::connect(ssh_target).await?;
-    if options.rollback {
+    // rollback：supervisor 只切换进程，不管理 current 链接，按 active 名同步链接。
+    let Some(bundle) = bundle else {
         ctl_raw(&session, ssh_target, "rollback").await?;
-        // supervisor 只切换进程，不管理 current 链接；按 active generation 名同步链接。
         let status = ctl(&session, ssh_target, "status").await?;
         let active = status
             .get("active")
@@ -326,38 +403,12 @@ async fn drive_upgrade(
             )
             .await;
         }
-        output(&format!("{} 已回滚到 {active}\n", options.host));
+        output(&format!("{} 已回滚到 {active}\n", common.display));
         return Ok(0);
-    }
-    let Some(bundle) = bundle else {
-        return Err("内部错误: 升级缺少包".into());
     };
-    let staging = ssh::exec(
-        &session,
-        ssh_target,
-        "umask 077; mktemp -d /tmp/remote-exec-upgrade.XXXXXXXX",
-        None,
-        Duration::from_secs(30),
-        None,
-    )
-    .await?;
-    let staging_path = staging.stdout.trim().to_owned();
-    if staging.code != 0
-        || !staging_path.starts_with("/tmp/remote-exec-upgrade.")
-        || staging_path.len() != "/tmp/remote-exec-upgrade.".len() + 8
-    {
-        return Err("无法创建升级暂存目录".into());
-    }
-    let outcome = try_upgrade(&session, ssh_target, options, bundle, &staging_path).await;
-    let _ = ssh::exec(
-        &session,
-        ssh_target,
-        &format!("rm -rf -- {}", ssh::shell_quote(&staging_path)),
-        None,
-        Duration::from_secs(15),
-        None,
-    )
-    .await;
+    let staging = mktemp_staging(&session, ssh_target, "upgrade").await?;
+    let outcome = try_upgrade(&session, ssh_target, bundle, &staging).await;
+    remove_staging(&session, ssh_target, &staging).await;
     let summary = outcome?;
     let generation = summary
         .get("generation")
@@ -368,13 +419,10 @@ async fn drive_upgrade(
         .get("previous")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    output(&format!(
-        "{} 已切换到新版本 {generation}",
-        options.host
-    ));
+    output(&format!("{} 已切换到新版本 {generation}", common.display));
     // 两段式：等待旧 generation 连接归零后 retire；窗口到期则提示手工处理。
     if let Some(previous) = previous {
-        match wait_and_retire(&session, ssh_target, &previous, options.retire_wait).await {
+        match wait_and_retire(&session, ssh_target, &previous, retire_wait).await {
             Ok(()) => output(&format!("，旧版本 {previous} 已回收\n")),
             Err(error) => output(&format!(
                 "。旧版本 {previous} 回收未完成（{error}），可稍后执行 remote-execd ctl --control {CONTROL_SOCKET} retire {previous}\n"
@@ -389,7 +437,6 @@ async fn drive_upgrade(
 async fn try_upgrade(
     session: &ssh::Session,
     ssh_target: &SshTarget,
-    _options: &Options,
     bundle: &bundle::RawBundle,
     staging_path: &str,
 ) -> Result<Value, String> {
@@ -462,22 +509,16 @@ async fn bootstrap_first_install(
     sha256: &str,
     staging_path: &str,
 ) -> Result<Value, String> {
-    let generation = format!(
-        "bootstrap-{}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-        &sha256[..8]
-    );
-    let package = ssh::shell_quote(&format!("{staging_path}/package.tar.gz"));
+    let generation = format!("bootstrap-{}-{}", unix_now_secs(), &sha256[..8]);
+    unpack_generation(
+        session,
+        ssh_target,
+        &generation,
+        &format!("{staging_path}/package.tar.gz"),
+    )
+    .await?;
     let script = format!(
-        "set -e; mkdir -p {VERSIONS_DIR} && mkdir -p {VERSIONS_DIR}/{generation} && \
-tar -xzf {package} -C {VERSIONS_DIR}/{generation} && \
-chmod -R a+rX,go-w {VERSIONS_DIR}/{generation} && \
-test -x {VERSIONS_DIR}/{generation}/bin/remote-execd && \
-ln -sfn {VERSIONS_DIR}/{generation} {CURRENT_LINK} && \
-systemctl daemon-reload && systemctl enable --now remote-exec-supervisor.service && \
+        "set -e; systemctl daemon-reload && systemctl enable --now remote-exec-supervisor.service && \
 for _ in 1 2 3 4 5 6 7 8 9 10; do test -S {CONTROL_SOCKET} && exit 0; sleep 1; done; \
 echo 'supervisor 控制套接字未就绪' >&2; exit 1"
     );

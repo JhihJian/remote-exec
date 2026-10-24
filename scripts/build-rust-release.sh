@@ -2,7 +2,7 @@
 # remote-exec（Rust）正式构建与发布打包：
 #   - daemon（remote-execd）双架构 musl 静态包 remote-exec-linux-{x64,arm64}.tar.gz
 #   - 体积门禁：daemon 压缩包严格小于 2,000,000 字节
-#   - rex 客户端双架构包 rex-linux-{x64,arm64}.tar.gz（独立体积预算，无门禁）
+#   - rex / rex-ops 客户端双架构包（独立体积预算，无门禁）
 #   - 产物附 SHA-256 与 size.json 汇总
 #
 # x86_64 本机交叉（musl-gcc），aarch64 经 docker messense/rust-musl-cross 交叉。
@@ -65,7 +65,8 @@ build_local_x64() {
   export CC_x86_64_unknown_linux_musl=musl-gcc
   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
   (cd "$PROJECT_ROOT/rust" && cargo build --release --locked \
-    --target x86_64-unknown-linux-musl -p remote-exec-daemon -p remote-exec-rex -p remote-exec-ops)
+    --target x86_64-unknown-linux-musl --features remote-exec-daemon/ops \
+    -p remote-exec-daemon -p remote-exec-rex -p remote-exec-ops)
 }
 
 build_docker_arm64() {
@@ -74,14 +75,17 @@ build_docker_arm64() {
     -v "$PROJECT_ROOT/rust:/home/rust/src" \
     -v remote-exec-cargo-registry:/home/rust/.cargo/registry \
     messense/rust-musl-cross:aarch64-musl \
-    cargo build --release --locked --target aarch64-unknown-linux-musl \
+    cargo build --release --locked --target aarch64-unknown-linux-musl --features remote-exec-daemon/ops \
       -p remote-exec-daemon -p remote-exec-rex -p remote-exec-ops
 }
 
 # ---- 第三方许可证 ----
-third_party() { # $1: crate 名（remote-exec-daemon|remote-exec-rex） $2: target $3: 输出文件
+third_party() { # $1: crate 名（remote-exec-daemon|remote-exec-rex|remote-exec-ops） $2: target $3: 输出文件
+  local manifest="$PROJECT_ROOT/rust/${1#remote-exec-}/Cargo.toml"
+  local -a features=()
+  [[ "$1" == remote-exec-daemon ]] && features+=(--features ops)
   cargo metadata --offline --locked --format-version 1 --filter-platform "$2" \
-    --manifest-path "$PROJECT_ROOT/rust/${1#remote-exec-}/Cargo.toml" > "$WORK/metadata.json"
+    --manifest-path "$manifest" "${features[@]}" > "$WORK/metadata.json"
   node - "$WORK/metadata.json" "$3" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -145,7 +149,7 @@ const [out, version, target, arch, compiler] = process.argv.slice(2);
 fs.writeFileSync(out, JSON.stringify({
   status: 'release', component: 'daemon', version, target, arch, compiler,
   layout: { binary: 'bin/remote-execd', installer: 'scripts/install.sh', unit: 'packaging/remote-exec-supervisor.service' },
-  capabilities: ['exec', 'exec.stream', 'file.read', 'file.write', 'relay', 'upload', 'download', 'supervisor'],
+  capabilities: ['exec', 'exec.stream', 'file.read', 'file.write', 'relay', 'upload', 'download', 'supervisor', 'deploy.ssh'],
   extensions: ['rex-ops'],
 }, null, 2) + '\n');
 NODE

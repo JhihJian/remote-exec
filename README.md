@@ -12,7 +12,7 @@ remote-exec 的主要能力之一，是在**单一外部端口**的设备上进�
 
 ## 项目状态
 
-当前版本为 `1.1.0`，运行时依赖 Node.js 18 或更高版本，以及 `ws` 库。目标运行环境为 Linux，命令执行依赖 `bash`、`setsid` 等常见系统工具。
+当前版本为 `1.1.0`。正式运行时、客户端、安装器、`rex-ops` 运维扩展和 supervisor 已由 Rust 提供；Node.js 代码仅作为迁移期回滚资产和 Pi 宿主适配层依赖保留。目标运行环境为 Linux，命令执行依赖 `bash`、`setsid` 等常见系统工具。
 
 已验证的能力包括：
 
@@ -22,13 +22,11 @@ remote-exec 的主要能力之一，是在**单一外部端口**的设备上进�
 - TLS 证书校验、错误 token、超时、客户端断连和进程组清理。
 - 100MB 文件上传和下载的哈希一致性验证。
 
-## Rust 离线原型
+## Rust 正式运行时
 
-面向无法联网安装依赖、通过慢速 SSH 部署的 Linux x86_64 和 ARM64 设备，项目提供独立的 Rust musl 静态原型。服务器包包含 TLS 证书、私钥、token 哈希和安装启动材料，构建强制要求完整压缩包小于 2,000,000 字节。目标机使用已有 Bash 与常见系统工具完成离线安装。
+Rust 正式发布包包含 daemon、supervisor、`rex` 和 `rex-ops`，支持 x86_64 与 ARM64 Linux。发布包严格执行 daemon 体积门禁，安装器支持 systemd、凭据保留、重复安装、重启恢复和 `release.json` 版本布局。`rex-ops` 承载 SSH 直连/网关部署、无中断升级、回滚和 Node→Rust 迁移。
 
-原型已覆盖 TLS/WSS、命令与流式输出、文件 RPC、HTTPS 上传下载和单跳 relay，并提供现有 Node 客户端互操作和禁网安装验证。网关 SSH 部署、无中断升级和弱网 SSH 续传属于后续迁移范围，正式 Node 服务继续独立维护。构建与安装方法见 [Rust 离线原型](docs/operations/RUST_OFFLINE_PROTOTYPE.md)。
-
-已在 Linux x86_64 实机验证免密 SSH 管道传输、无网络离线安装、TLS/WSS 命令与文件操作，以及用户级 systemd 重启。ARM64 包已在 openEuler 22.03 LTS-SP1 实机验证系统级 systemd 常驻和 relay 接入。目标机无需 Node、OpenSSL 或 Cargo。
+已覆盖 TLS/WSS、命令与流式输出、文件 RPC、HTTPS 大文件上传下载、单跳 relay、正式安装、SSH 部署、网关暂存清理和 supervisor 升级。目标机无需 Node、Cargo 或 npm。构建与迁移方法见 [Rust 迁移方案](docs/operations/RUST_MIGRATION_PLAN.md)。
 
 ## 安全边界
 
@@ -330,13 +328,13 @@ ssh user@host 'cd ~/remote-exec && npm install --omit=dev'
 
 ## 一键安装
 
-支持 Ubuntu 22.04/24.04、Debian 12 的 Linux x86_64 主机。用户通过 SSH 登录后执行：
+支持 Ubuntu 22.04/24.04、Debian 12 的 Linux x86_64 主机。Rust 正式发布包通过以下入口安装：
 
 ```bash
 curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | bash
 ```
 
-普通用户在命令末尾使用 `| sudo bash`。安装脚本会下载自带 Node.js 和运行依赖的版本包，生成 TLS 证书和 token，安装专用用户运行的 systemd 服务，并执行真实 TLS、token、WSS 和命令验收。默认端口为 `8791`，客户端实际访问的 DNS 名或 IP 可用 `--address` 指定：
+普通用户在命令末尾使用 `| sudo bash`。安装脚本会下载并校验 Rust supervisor/daemon 包，生成 TLS 证书和 token，安装专用用户运行的 systemd 服务，并执行真实 TLS、token、WSS 和命令验收。目标机不需要 Node.js、Cargo 或项目依赖。默认端口为 `8791`，客户端实际访问的 DNS 名或 IP 可用 `--address` 指定：
 
 ```bash
 curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/install.sh | bash -s -- --address node.example.com
@@ -356,24 +354,24 @@ rex-ops deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@1
 
 仓库内可用 `./rex.sh deploy ...`，它会路由到 `rex-ops`；直接使用扩展时执行 `rex-ops deploy ...`。部署前确认 SSH 指纹，先尝试免密 SSH，按需无回显询问 SSH 和 sudo 密码。运行包通过 SSH 传入目标，目标无需访问公网。验收通过后自动保存各机凭据、登记直连或 `via` 配置，失败目标不会登记。
 
-`--port` 默认 8791，支持 `--ssh-port`、`--identity`、`--package` 和 `--host-key`。经网关部署需要网关运行包含 `deploy.ssh` 扩展的 daemon，目标 daemon 端口应对网关内网可达；核心服务包默认不启用该网关部署接口。详见 [SSH 批量部署](docs/operations/SSH_DEPLOYMENT.md)。
+`--port` 默认 8791，支持 `--ssh-port`、`--identity`、`--package` 和 `--host-key`。Rust 正式 daemon 包启用 `deploy.ssh`，经网关部署时目标 daemon 端口应对网关内网可达。详见 [SSH 批量部署](docs/operations/SSH_DEPLOYMENT.md)。
 
-### Rust 原型一行 SSH 安装
+### Rust 离线 SSH 安装
 
-Rust 原型当前使用独立安装入口，不会修改现有 Node daemon。适合目标机无公网、无 Node 且需要先验证小包部署的场景。构建端按目标地址和 target 生成包后，可通过免密 SSH 标准输入传输并在目标机离线安装：
+Rust 正式包支持目标机无 Node、无 Cargo 和无公网环境。发布包在构建端生成后，可通过免密 SSH 传输并在目标机离线安装：
 
 ```bash
 TARGET_SSH=user@host
 TARGET_ADDRESS=192.0.2.10
 TEST_PORT=18791
 OUTPUT_DIR=dist/rust-device
-bash scripts/build-rust-prototype.sh --address "$TARGET_ADDRESS" --port "$TEST_PORT" \
-  --target aarch64-unknown-linux-musl --output-dir "$OUTPUT_DIR"
-cat "$OUTPUT_DIR/remote-exec-rust-prototype-linux-arm64.tar.gz" | \
-  ssh "$TARGET_SSH" 'set -e; base=$(mktemp -d "$HOME/remote-exec-rust.XXXXXX"); mkdir "$base/stage"; tar -xzf - -C "$base/stage"; bash "$base/stage/install.sh" --systemd /opt/remote-exec-rust-prototype'
+bash scripts/build-rust-release.sh --arch arm64 --output-dir "$OUTPUT_DIR"
+scp "$OUTPUT_DIR/remote-exec-linux-arm64.tar.gz" \
+  "$OUTPUT_DIR/remote-exec-linux-arm64.tar.gz.sha256" rust/packaging/install.sh "$TARGET_SSH:/tmp/"
+ssh "$TARGET_SSH" 'sudo bash /tmp/install.sh --package /tmp/remote-exec-linux-arm64.tar.gz --address '"$TARGET_ADDRESS"' --port '"$TEST_PORT"'
 ```
 
-`--target` 支持 `x86_64-unknown-linux-musl` 和 `aarch64-unknown-linux-musl`，分别生成 x64 与 ARM64 包。root 目标使用 `--systemd` 后会启用 `remote-exec-rust-prototype.service`，包传输完成后目标机不执行 Node、Cargo、OpenSSL 或 npm。完整包构建时强制小于 `2,000,000` 字节；Rust 服务自身支持受白名单限制的单跳 relay，可由 NM105 的 Node relay 或其他 Rust relay 转发 `exec`、`exec.stream`、`file.read` 和 `file.write` 请求。
+`build-rust-release.sh` 生成 x64 与 ARM64 包，daemon 包严格小于 `2,000,000` 字节。目标机需要系统 OpenSSL 生成首次安装证书，但不需要 Node、Cargo 或 npm。Rust daemon 支持受白名单限制的单跳 relay 和正式 supervisor 升级。
 
 ## 单一外部端口无中断升级
 
@@ -389,19 +387,22 @@ npm run test:upgrade
 
 
 
-安装完整依赖后运行全部门禁：
+安装完整依赖后运行基础回归：
 
 ```bash
 npm ci
 npm test
 ```
 
-测试命令包括：
+正式发布 workflow 还会运行 Rust 安装、部署、网关和升级门禁。测试命令包括：
 
 - `npm run check`：检查 JavaScript 语法。
 - `npm run typecheck`：执行 TypeScript 类型检查。
 - `npm run test:extension`：验证 Pi 命令耗时更新、并行调用计时、结束后的定时器清理及结果渲染。
-- `npm run test:deploy`：使用真实 SSH、sudo 和 systemd 的隔离容器验证直连与网关批量部署，需要正式构建包和 Docker。
+- `npm run test:install`：使用 Rust 正式安装器验证 supervisor、重复安装、凭据保留和重启恢复，需要正式构建包和 Docker。
+- `npm run test:deploy`：使用 Rust `rex-ops`、真实 SSH、sudo 和 systemd 的隔离容器验证直连部署及升级。
+- `npm run test:rust-gateway`：使用 Rust daemon `deploy.ssh` 验证网关部署、暂存清理和输出脱敏。
+- `npm run test:upgrade`：验证 Rust supervisor 控制面升级、回滚和连接排空。
 - `npm run test:integration`：生成临时证书和 token，启动 daemon，运行端到端测试和畸形输入验证。
 
 单独运行协议回归：

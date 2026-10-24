@@ -6,9 +6,11 @@ remote-exec 在受信任的 Linux 主机上通过 TLS、Bearer token 和 JSON-RP
 
 ## 系统边界
 
-客户端运行在 daemon 进程之外：TUI 调用 Node.js 客户端库，Pi extension 在 Pi 中提供远程工具。它们通过 HTTPS 或 WSS 连接 daemon。部署启用 supervisor 时，supervisor 作为独立进程持有固定入口，把连接转发给当前 daemon 版本；TLS 和 Token 验证仍在 daemon 内完成。
+客户端运行在 daemon 进程之外：Rust `rex` 提供核心命令行和 readline 入口，Rust `rex-ops` 提供部署、升级和迁移，Pi extension 在 Pi 中提供远程工具。它们通过 HTTPS 或 WSS 连接 Rust daemon。supervisor 作为独立进程持有固定入口，把连接转发给当前 daemon 版本；TLS 和 Token 验证仍在 daemon 内完成。Node 客户端和 daemon 目录保留为迁移期回滚基线。
 
-### Daemon 代码结构与模块协作
+### 兼容基线：Node Daemon 代码结构
+
+下图保留 Node 实现的职责映射，用于迁移、回滚和协议对照；生产发布路径使用下方 Rust daemon。
 
 图中的分组表达职责层次和代码目录，组内方框表达模块，箭头表达关键模块协作。上层可以使用下层，同层模块可以协作；各上层对 `shared/` 的通用依赖由这一约定表达，省略重复连线。箭头说明调用方与职责接收方，请求返回、流式事件和取消回调在下文说明。
 
@@ -48,7 +50,7 @@ flowchart TB
         rpc -->|连接与请求计数、注册强制关闭| lifecycle
         operations ~~~ foundation
     end
-    subgraph rust["Rust 原型进程 · rust/daemon/src/"]
+    subgraph rust["Rust 正式 daemon 进程 · rust/daemon/src/"]
         rmain["main.rs<br/>TLS 凭据 · 监听 · 连接任务"]
         rserver["server.rs<br/>HTTP 文件流 · WSS 升级"]
         rrpc["rpc.rs<br/>会话 · 请求顺序 · 取消"]
@@ -96,13 +98,13 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 | 部署客户端 | 解析直连或网关目标，交互认证，验收并原子登记凭据与配置 | `src/cli/main.js`、`src/deploy/cli.js`、`bundle.js`、`config-store.js`、`prompts.js` |
 | Pi 适配层 | 注册远程工具，独立实现受协议回归测试约束的客户端 | `pi-extension/`，关键文件 `remote-exec.ts` |
 
-## Rust 离线原型边界
+## Rust 正式运行时边界
 
-Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。Rust 客户端拆为核心 `rex` 与运维扩展 `rex-ops`：`rex` 直接复用现有 ~/.config/remote-exec/hosts.json，提供 exec/read/write/upload/download/smoke、hosts 探测和 readline 操作；`rex-ops` 承载 SSH 部署、升级和迁移。`rex.sh` 根据子命令在两个二进制之间路由，核心客户端不加载 SSH/SFTP 依赖。
+Rust 正式实现交付 TLS/WSS 命令、文件服务、HTTPS 大文件传输、受白名单限制的单跳 relay、daemon 排空、supervisor 状态机和 ctl 两段式升级；使用 x86_64 或 ARM64 的 musl 构建正式服务器包，并由 `rust/packaging/install.sh` 安装。Rust 客户端拆为核心 `rex` 与运维扩展 `rex-ops`：`rex` 复用现有 `~/.config/remote-exec/hosts.json`，提供 exec/read/write/upload/download/smoke、hosts 探测和 readline 操作；`rex-ops` 承载 SSH 部署、升级和迁移。`rex.sh` 根据子命令在两个二进制之间路由，核心客户端不加载 SSH/SFTP 依赖。
 
-Rust 原型保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和可写可执行的目录，安装脚本使用常见系统工具；root 安装可创建独立 systemd 服务。Rust daemon 的 SIGTERM 进入排空，既有请求完成后退出，排空超时强制关闭连接；完整迁移还需实现网关部署与弱网 SSH 续传。
+Rust 正式实现保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和 systemd（离线包安装），安装脚本使用常见系统工具；root 安装创建 supervisor 管理的 generation 服务。Rust daemon 的 SIGTERM 进入排空，既有请求完成后退出，排空超时强制关闭连接。Node→Rust migrate 负责既有 Node 标准布局的并置安装、交接和回滚。
 
-Rust 图中调用向下委托，同层协作由明确连线表达，原型与 Node 服务是两个独立交付进程。模块映射如下：
+Rust 图中调用向下委托，同层协作由明确连线表达。Rust 是正式运行时，Node 图和代码属于迁移期回滚基线。模块映射如下：
 
 | 模块 | 职责 | 代码映射 |
 | --- | --- | --- |
@@ -128,9 +130,9 @@ Rust 图中调用向下委托，同层协作由明确连线表达，原型与 No
 
 重复执行保持既有 token 和健康服务；下载校验或启动失败时不覆盖既有安装，修复原因后可以重试。
 
-支持范围内的 Linux x86_64 主机可以通过发布入口安装 remote-exec daemon。安装入口下载包含 Node.js 和运行依赖的版本包，生成 TLS 与 token 凭据，创建 systemd 服务并执行真实 TLS、token、WebSocket 和命令验收。daemon 以专用服务用户运行，凭据与客户端接入资料分别保存。安装脚本支持重复执行、启动失败后重试和错误包校验保护；它不负责防火墙、云安全组或客户端机器配置。
+支持范围内的 Linux x86_64 与 ARM64 主机可以通过 Rust 发布入口安装 remote-exec daemon。安装入口下载 Rust supervisor/daemon 版本包，生成 TLS 与 token 凭据，创建 systemd 服务并执行真实 TLS、token、WebSocket 和命令验收。daemon 以专用服务用户运行，凭据与客户端接入资料分别保存。安装脚本支持重复执行、启动失败后重试和错误包校验保护；它不负责防火墙、云安全组或客户端机器配置。
 
-安装代码位于 `scripts/install.sh`、`scripts/build-release.sh`、`packaging/remote-exec.service` 和 `test/install/runner.js`。安装器直接启动单一 daemon，supervisor 与无中断升级属于独立部署路径。发布工作流位于 `.github/workflows/release.yml`，为 Linux x86_64 生成自包含包并发布安装入口。
+安装代码位于 `rust/packaging/install.sh`、`scripts/build-rust-release.sh`、`rust/packaging/remote-exec-supervisor.service` 和 `test/rust-prototype/install.js`。正式发布包由 daemon、supervisor、`rex`、`rex-ops` 和安装入口组成；Node 安装脚本与旧 systemd 路径仅作为迁移期回滚资产保留。
 
 
 ## 稳定边界
@@ -139,7 +141,7 @@ daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴
 
 
 
-RPC 服务器默认暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类核心方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。`deploy.ssh` 仅在构建 daemon 的 `ops` feature 时启用，属于可选运维扩展，不进入核心服务包。
+RPC 服务器默认暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类核心方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。
 
 命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。
 
@@ -243,10 +245,10 @@ SSH 指纹不符、认证失败或目标验收失败时，系统不登记该目�
 | `/upload`、`/download` | 顶层能力“传输大文件” | 调用方可独立请求流式文件传输，并以 SHA-256 独立验收；它不经 relay，不能并入 RPC 文件操作。 |
 | `relay` | 顶层能力“经网关转发请求” | 调用方可独立请求网关访问目标 daemon，并以 relay 信封和目标结果验收。 |
 | Token 验证、TLS、白名单、超时和进程组清理 | 对应能力的下层行为 | 调用方不能把这些机制作为独立结果请求或验收；它们只限制或保证父能力在特定条件下的结果。 |
-| `rex-ops deploy`、可选 `deploy.ssh` | 顶层能力“部署并接入主机” | 调用方可通过独立运维扩展请求安装，并以真实 SSH、systemd、协议验收和客户端配置登记结果验收。该能力不进入核心 daemon/rex 默认构建；指纹检查与暂存管理仅支持该部署结果。 |
+| `rex-ops deploy`、正式 `deploy.ssh` | 顶层能力“部署并接入主机” | 调用方通过独立运维扩展请求安装，并以真实 SSH、systemd、协议验收和客户端配置登记结果验收。正式 Rust daemon 包启用该部署接口；核心客户端仍不加载 SSH/SFTP。 |
 | Node.js client、TUI、Pi extension | 支撑组件 | 它们投影远程操作结果，部署客户端另外交付主机安装与接入结果。 |
 | `/healthz`、`/readyz` | 支撑组件 | 它们供部署探测服务可用性，不代表远程执行、文件或 relay 的调用方交付结果。 |
 
 ## 验证边界
 
-`npm test` 先执行 JavaScript 语法检查、Pi extension 的 TypeScript 类型检查和耗时渲染测试，再由 `test/integration/runner.js` 创建临时证书和 token、以外部进程启动 daemon，最后运行协议回归和 WebSocket 畸形输入测试。集成测试不复用生产传输实现，因此是 daemon、Node client 和 Pi extension 协议契约的主要回归依据。
+`npm test` 运行 JavaScript 静态检查、Pi extension 类型检查和 Rust 协议/排空/supervisor 回归；正式发布 workflow 额外运行 Rust 安装、直连部署、网关部署和升级测试。安装、部署与升级测试使用真实 Rust 包和外部进程验证，不复用生产传输实现。Node 测试路径保留为迁移期兼容基线。

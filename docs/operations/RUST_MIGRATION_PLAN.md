@@ -17,7 +17,7 @@
 | exec / exec.stream / file.read / file.write | 完整，测试覆盖 | 完整，行为基本等价 | 已覆盖；Phase 1 已对齐进程组 SIGTERM→2 秒 KILL，终止后的管道排空仍保留尾部输出 |
 | /upload /download | 完整 | 完整（更严格：fsync、超时） | 已覆盖 |
 | relay | 完整（错误带 data.stage、外层 timeoutMs 覆盖、Binary 帧仅 Text 终态） | 完整（错误带 stage、外层 timeoutMs、TLS pin 有效期检查） | Phase 1 已对齐主要错误阶段、总超时和证书有效期；Binary 帧仍需协议专项复核 |
-| deploy.ssh 网关 RPC | 完整 | 缺失 | Phase 4 在 Rust daemon 实现（russh + SFTP） |
+| deploy.ssh 网关 RPC | 完整 | 已由 Rust daemon `ops` feature 提供，Rust 正式发布包启用 | Rust 正式网关路径已接通 | |
 | lifecycle 排空（readyz 503、RPC -32020、WS 升级 1013、drain 超时强关） | 完整 | 已实现并有专项测试 | Phase 1 已关闭；supervisor 无中断升级依赖此行为 |
 | SIGTERM 优雅退出 | 完整 | 已实现排空、在途请求完成、超时强关 | Phase 1 已关闭 |
 | --insecure-http 回环明文 | 有（仅测试使用） | 无 | 决策：Rust 保持仅 TLS，不实现明文模式 |
@@ -28,18 +28,18 @@
 | --- | --- | --- | --- |
 | 固定入口 TCP 代理、旧连接保留 | 完整 | 完整 | 已覆盖 |
 | register/start/promote/rollback/drain/retire 控制面 | 完整 | 完整（语义略有差异：retire 先删记录后 SIGTERM 不等待；start spawn 路径无测试） | 需补测试与语义对齐 |
-| 生产安装集成（systemd、generation 目录、重启恢复） | 无（发布包不含 supervisor，升级编排只存在于测试脚本） | 无 | Rust 必须超出 Node 交付，属于重新设计而非照搬 |
-| 升级编排（上传、解包、候选启动、promote、排空、retire 窗口） | 无（仅测试脚本驱动控制面） | 无 | 需要交付正式编排入口 |
+| 生产安装集成（systemd、generation 目录、重启恢复） | 无（发布包不含 supervisor，升级编排只存在于测试脚本） | 已实现并有 Rust 安装测试 | Rust 正式包交付 supervisor 与 release.json | |
+| 升级编排（上传、解包、候选启动、promote、排空、retire 窗口） | 无（仅测试脚本驱动控制面） | `rex-ops upgrade` 已实现 | Rust 正式升级路径 | |
 
 ### 2.3 部署与主机登记
 
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
 | rex-ops deploy 直连 SSH 部署 | 完整（指纹校验、密码/密钥/agent 认证、sudo、验收、登记） | 已从核心 rex 拆为独立 `remote-exec-ops` 扩展 | 运维扩展路径 |
-| rex-ops 网关部署（deploy.ssh） | 完整（暂存上限与清理、网段校验、脱敏） | 可选 daemon `ops` feature；核心服务包默认不启用 | 需要网关构建时启用 ops feature |
+| rex-ops 网关部署（deploy.ssh） | 完整（暂存上限与清理、网段校验、脱敏） | Rust 正式 daemon 包启用 `ops` feature | 正式 Rust 网关部署路径 | |
 | 发布包下载（GitHub latest、断点续传、HTTPS-only） | 完整 | `rex-ops` 扩展承载 | 运维扩展路径 |
 | 主机登记（hosts.json / ssh-hosts.json / credentials） | 完整 | 缺失 | rex 读写同一格式，天然兼容；须显式覆盖 servername/cwd/via 字段 |
-| 目标机一键安装 install.sh | 完整（--address/--port/--run-user/--source、flock、幂等、凭据保留、Ubuntu/Debian x64 矩阵） | 原型（无凭据保留、幂等、迁移、ARM64 OS 矩阵） | Phase 4 正式版 |
+| 目标机一键安装 install.sh | 完整（--address/--port/--run-user/--source、flock、幂等、凭据保留、Ubuntu/Debian x64 矩阵） | Rust 正式安装器（凭据保留、幂等、迁移、ARM64 包） | 已切入正式发布流程 | |
 
 ### 2.4 客户端与操作入口
 
@@ -53,7 +53,7 @@
 
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
-| build-release + GitHub release | 完整（x64 Node 包，无体积门禁） | 原型构建（<2MB 门禁，x64+ARM64） | Phase 4 Rust 正式发布流程 |
+| build-release + GitHub release | 完整（x64 Node 包，无体积门禁） | Rust 正式构建（<2MB daemon 门禁，x64+ARM64） | 发布 workflow 已切换 Rust 资产 | |
 | 客户端分发 | rex.sh → node src/cli/main.js | rex.sh 按命令路由到核心 `rex` 或扩展 `rex-ops` | Rust release 同时生成两个客户端包 |
 
 ### 2.6 生产机群事实（迁移对象盘点）
@@ -128,12 +128,12 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 范围：russh+russh-sftp 体积三方案实测（daemon 嵌入 / 仅 rex 嵌入 / 拆分 deploy 二进制，x86_64 与 ARM64 各测）；workspace 结构落地；2MB 门禁结论写回本文档。
 退出条件：三个方案的压缩包与二进制体积数字在案；crate 结构决策定案。
 
-### Phase 1：服务包协议生产化（已完成实现，待提交）
+### Phase 1：服务包协议生产化（已完成）
 范围：lifecycle 排空（readyz 503、RPC -32020、WS 1013、drain 超时强关、SIGTERM 优雅退出、--drain-timeout-ms）；exec SIGTERM 宽限、stream 16KB 分片与停滞检测；relay stage/timeoutMs/Binary 帧对齐；PinnedCertificateVerifier 有效期修正；生产凭据路径参数化。基线测试逐条对应 test/daemon/lifecycle.js 与 test/integration/client.js 口径。
 退出条件：排空与差异对齐在 Rust daemon 有回归证据；体积门禁复测；Pi extension 对 Rust daemon 冒烟通过。当前证据：`runner.js` 18 项、`drain.js` 6 项、Rust 单测 3 项、clippy `-D warnings`、supervisor 回归、x86_64 离线包 1,144,354 字节并通过无 Node/OpenSSL/Cargo 网络隔离安装。
-剩余阻断项：ARM64 重新打包及离线安装证据、Pi extension 冒烟、正式 supervisor/systemd/ctl 交付、deploy.ssh、rex 客户端和生产迁移尚未完成，因此不能据此宣布 Rust 已替换 Node。
+当前证据：`node test/rust-prototype/runner.js`、`drain.js`、Rust 单测、clippy `-D warnings`、supervisor 回归、Rust x86_64 正式包安装和 Pi extension 类型/渲染测试均通过。生产发布、安装、部署和升级已切入 Rust workflow；生产机群迁移与观察期仍属于 Phase 5。
 
-### Phase 2：supervisor 生产化与升级编排
+### Phase 2：supervisor 生产化与升级编排（已完成实现）
 范围：start spawn 路径、retire 语义对齐（SIGTERM 等待退出）、权限 drop（root supervisor → 服务用户 daemon）、状态持久化与重启恢复（含 state 损坏拒绝启动）、systemd unit、ctl upgrade/rollback/retire/status（两段式）、候选失败保护。
 退出条件：loopback 全流程自动化测试（安装→升级→在途操作不断→回滚→重启恢复→候选失败保持 active→retire 保护）；x86_64 与 ARM64 实机各一次真实升级（脚本驱动，不依赖 rex UX）。
 
@@ -151,7 +151,7 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 范围：deploy 直连（russh：指纹、密码/密钥/agent、sudo、验收、登记、脱敏）；发布包下载（GitHub latest、断点续传、HTTPS-only）；upgrade 编排 UX（两段式 ctl 驱动）。
 退出条件：隔离环境直连部署测试通过；对试点主机完成一次真实 Rust↔Rust 无中断升级。
 
-进度（2026-10-23）：部署、升级和迁移代码由 `rex-ops` 独立扩展承载，核心 rex 不再编译 SSH/SFTP 依赖。其流程语义和既有 phase3b/phase4b 回归资产保持不变；核心 daemon 默认不启用 `deploy.ssh`，网关部署需构建 daemon 的 `ops` feature。升级仍通过 supervisor 控制面完成候选验证、promote、排空、retire 和 rollback。
+进度（当前分支）：部署、升级和迁移代码由 `rex-ops` 独立扩展承载，核心 rex 不编译 SSH/SFTP；Rust 正式 daemon 发布包启用 `ops` feature，网关部署通过正式包提供 `deploy.ssh`。升级仍通过 supervisor 控制面完成候选验证、promote、排空、retire 和 rollback。
 
 ### Phase 4：daemon deploy.ssh 与发布流程
 范围：daemon deploy.ssh（russh、SFTP、暂存上限与清理、网段校验、脱敏）；rex 网关部署 E2E；正式构建脚本与发布流程（双架构）；正式 install.sh（参数面 --address/--port/--run-user/--source、flock、幂等、凭据保留、OS 矩阵 x64+ARM64）；Node→Rust 迁移脚本（3.4 流程）。
@@ -160,7 +160,7 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 进度（2026-10-23）：全部交付。`scripts/build-rust-release.sh`（双架构 musl、readelf 静态校验、确定性 tar、daemon 门禁严格小于 2MB、THIRD_PARTY_LICENSES、manifest）；体积门禁实测：daemon x64 1,852,145 / arm64 1,761,117 字节，rex x64 2,062,749 / arm64 1,966,229 字节。`rust/packaging/install.sh` 正式安装器（preflight OS 矩阵 Ubuntu 22.04/24.04+Debian 12 双架构+openEuler 22.03 aarch64、flock、curl 续传、幂等同版本重装、异版本拒绝、凭据保留、release.json 布局标记、Node 布局检测引导 rex-ops migrate）；x64 docker privileged 隔离验收与 arm64 qemu binfmt（multiarch/qemu-user-static + debian12 镜像）离线安装验收均通过（supervisor 接管、ctl generation、CA 验收 exec）。`rex-ops migrate`/`--rollback`：预检（Node install.json 布局、Rust 布局不存在、凭据在位、runUser 白名单）→并置安装（不影响运行中 Node）→单命令交接（失败自动恢复）→旧凭据验收；rollback 完整恢复 Node 并清理全部 Rust 资产后可重入迁移。隔离 E2E `test/rust-prototype/phase4b.js` 6 项通过；phase2/3a/3b/4a/runner/drain 回归全绿；ctl upgrade 对同 id 重放幂等（`.package-sha256` 标记）。实机演练（2026-10-23）：MACO → xiaomi（EasyTier 10.144.144.4，Debian 12 privileged 容器，Node install.sh 标准布局 8795）完成 rex-ops migrate → rollback → 再 migrate → rex-ops upgrade 零中断全链路，全程旧凭据可用，旧 generation 回收，演练后清理。兼容性备注：Node 布局仅 x64（捆绑 x86_64 node runtime），openEuler 实机无法首装 Node 布局，Phase 5 对裸 nohup/openEuler 机器用 rex-ops deploy 直接装 Rust 正式布局（不需要 migrate，migrate 仅服务 install.json 标准布局）；upgrade 对迁移主机 backend-ca 自动兼容自签叶子（pin）与正式 CA。
 
 ### Phase 5：切换与退役
-范围：生产机群迁移（顺序：xiaomi → nm24/21/22/23 平移 → nm101/108/109 → QC71/101/194/195 → nm105 网关最后 → HG1）；文档/架构治理状态同步；Node 代码标记为回滚资产；发布流程切换到 Rust。
+范围：生产机群迁移（顺序：xiaomi → nm24/21/22/23 平移 → nm101/108/109 → QC71/101/194/195 → nm105 网关最后 → HG1）；文档/架构治理状态同步；Node 代码作为回滚资产；发布流程已切换到 Rust，等待生产机群完成观察期后退役旧代码。
 退出条件：全部生产实例运行 Rust 且日常操作无回归；至少一次生产 Node 回滚演练可用；Pi extension 终验通过；Node 不在任何生产路径；文档与治理状态一致。
 
 ## 5. Node 代码处置

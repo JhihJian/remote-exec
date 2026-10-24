@@ -40,7 +40,7 @@
     },
     {
       "id": "rpc-operation-boundary",
-      "conclusion": "RPC 服务器默认暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类核心方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。`deploy.ssh` 仅在构建 daemon 的 `ops` feature 时启用，属于可选运维扩展，不进入核心服务包。",
+      "conclusion": "RPC 服务器默认暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类核心方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -150,7 +150,7 @@
     },
     {
       "id": "verification-boundary",
-      "conclusion": "`npm test` 先执行 JavaScript 语法检查、Pi extension 的 TypeScript 类型检查和耗时渲染测试，再由 `test/integration/runner.js` 创建临时证书和 token、以外部进程启动 daemon，最后运行协议回归和 WebSocket 畸形输入测试。集成测试不复用生产传输实现，因此是 daemon、Node client 和 Pi extension 协议契约的主要回归依据。",
+      "conclusion": "`npm test` 运行 JavaScript 静态检查、Pi extension 类型检查和 Rust 协议/排空/supervisor 回归；正式发布 workflow 额外运行 Rust 安装、直连部署、网关部署和升级测试。安装、部署与升级测试使用真实 Rust 包和外部进程验证，不复用生产传输实现。Node 测试路径保留为迁移期兼容基线。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -169,7 +169,7 @@
     },
     {
       "id": "one-command-install-boundary",
-      "conclusion": "支持范围内的 Linux x86_64 主机可以通过发布入口安装 remote-exec daemon。安装入口下载包含 Node.js 和运行依赖的版本包，生成 TLS 与 token 凭据，创建 systemd 服务并执行真实 TLS、token、WebSocket 和命令验收。daemon 以专用服务用户运行，凭据与客户端接入资料分别保存。安装脚本支持重复执行、启动失败后重试和错误包校验保护；它不负责防火墙、云安全组或客户端机器配置。",
+      "conclusion": "支持范围内的 Linux x86_64 与 ARM64 主机可以通过 Rust 发布入口安装 remote-exec daemon。安装入口下载 Rust supervisor/daemon 版本包，生成 TLS 与 token 凭据，创建 systemd 服务并执行真实 TLS、token、WebSocket 和命令验收。daemon 以专用服务用户运行，凭据与客户端接入资料分别保存。安装脚本支持重复执行、启动失败后重试和错误包校验保护；它不负责防火墙、云安全组或客户端机器配置。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -188,7 +188,7 @@
     },
     {
       "id": "rust-offline-prototype-boundary",
-      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。Rust 客户端拆为核心 `rex` 与运维扩展 `rex-ops`：`rex` 直接复用现有 ~/.config/remote-exec/hosts.json，提供 exec/read/write/upload/download/smoke、hosts 探测和 readline 操作；`rex-ops` 承载 SSH 部署、升级和迁移。`rex.sh` 根据子命令在两个二进制之间路由，核心客户端不加载 SSH/SFTP 依赖。",
+      "conclusion": "Rust 正式实现交付 TLS/WSS 命令、文件服务、HTTPS 大文件传输、受白名单限制的单跳 relay、daemon 排空、supervisor 状态机和 ctl 两段式升级；使用 x86_64 或 ARM64 的 musl 构建正式服务器包，并由 `rust/packaging/install.sh` 安装。Rust 客户端拆为核心 `rex` 与运维扩展 `rex-ops`：`rex` 复用现有 `~/.config/remote-exec/hosts.json`，提供 exec/read/write/upload/download/smoke、hosts 探测和 readline 操作；`rex-ops` 承载 SSH 部署、升级和迁移。`rex.sh` 根据子命令在两个二进制之间路由，核心客户端不加载 SSH/SFTP 依赖。",
       "documentRole": "overview",
       "evidence": [
         {

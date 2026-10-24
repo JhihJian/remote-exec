@@ -25,8 +25,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install install-test prerequisites
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap musl-tools
+      - name: Install Rust release prerequisites
+        run: sudo apt-get update && sudo apt-get install -y musl-tools openssl
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,33 +35,45 @@ jobs:
           targets: x86_64-unknown-linux-musl
           components: rustfmt, clippy
 
-      - name: Build Linux x64 package
-        run: bash scripts/build-release.sh --output-dir dist
-
       - name: Build Rust core and ops packages
         run: |
           cargo fmt --manifest-path rust/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
           cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
-          bash scripts/build-rust-release.sh --arch x64 --output-dir dist/rust
+          bash scripts/build-rust-release.sh --arch all --output-dir dist/rust
 
-      - name: Run tests
-        env:
-          INSTALL_PACKAGE: ${{ github.workspace }}/dist/remote-exec-linux-x64.tar.gz
-        run: npm test
+      - name: Build Rust integration image
+        run: docker build -t remote-exec-deploy:test -f test/deploy/Dockerfile test/deploy
 
-      - name: Verify real systemd install and reboot
-        env:
-          INSTALL_PACKAGE: ${{ github.workspace }}/dist/remote-exec-linux-x64.tar.gz
-          INSTALL_SYSTEMD: '1'
+      - name: Run Rust protocol and lifecycle tests
         run: |
-          docker build -t remote-exec-install-systemd:test test/install
-          npm run test:install
+          npm run test:rust
+          npm run test:rust-drain
+          npm run test:rust-supervisor
 
-      - name: Verify SSH direct and gateway deployment
+      - name: Verify Rust formal installation
         env:
-          INSTALL_PACKAGE: ${{ github.workspace }}/dist/remote-exec-linux-x64.tar.gz
-        run: npm run test:deploy
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust/remote-exec-linux-x64.tar.gz
+        run: npm run test:rust-install
+
+      - name: Verify Rust direct deployment and zero-downtime upgrade
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust/remote-exec-linux-x64.tar.gz
+        run: npm run test:rust-deploy
+
+      - name: Verify Rust gateway deployment
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust/remote-exec-linux-x64.tar.gz
+        run: npm run test:rust-gateway
+
+      - name: Verify Rust supervisor upgrade protocol
+        run: npm run test:rust-upgrade
+
+      - name: Verify retained Pi host adapter
+        run: npm run typecheck && npm run test:extension
+
+      - name: Verify architecture state
+        run: node .agents/architecture-governance/check-state.mjs check --require-active
 
       - name: Check tag version
         if: startsWith(github.ref, 'refs/tags/')
@@ -74,13 +86,12 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: remote-exec-linux-x64
+          name: remote-exec-rust
           path: |
-            dist/remote-exec-linux-x64.tar.gz
-            dist/remote-exec-linux-x64.tar.gz.sha256
             dist/rust/*.tar.gz
             dist/rust/*.tar.gz.sha256
             dist/rust/size.json
+            rust/packaging/install.sh
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
@@ -90,9 +101,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \
-            dist/remote-exec-linux-x64.tar.gz \
-            dist/remote-exec-linux-x64.tar.gz.sha256 \
             dist/rust/*.tar.gz \
             dist/rust/*.tar.gz.sha256 \
             dist/rust/size.json \
-            scripts/install.sh
+            rust/packaging/install.sh

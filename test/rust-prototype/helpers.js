@@ -14,9 +14,12 @@ const root = path.resolve(__dirname, "../..");
 const image = process.env.DEPLOY_TEST_IMAGE || "remote-exec-deploy:test";
 const rex = process.env.REX_BINARY || path.join(root,
   "rust/target/x86_64-unknown-linux-musl/release/rex");
+const rexOps = process.env.REX_OPS_BINARY || path.join(root,
+  "rust/target/x86_64-unknown-linux-musl/release/rex-ops");
 const daemonBinary = process.env.RUST_PROTOTYPE_BINARY || path.join(root,
   "rust/target/x86_64-unknown-linux-musl/release/remote-execd");
-const nodePackage = process.env.INSTALL_PACKAGE || path.join(root, "dist/remote-exec-linux-x64.tar.gz");
+const serverPackage = process.env.INSTALL_PACKAGE || path.join(root, "dist/rust-release/remote-exec-linux-x64.tar.gz");
+const nodePackage = process.env.NODE_PACKAGE || path.join(root, "dist/remote-exec-linux-x64.tar.gz");
 
 const sha = (data) => crypto.createHash("sha256").update(data).digest("hex");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,6 +69,16 @@ function createHarness() {
       child.once("error", (error) => resolve({ code: -1, stdout, stderr: `${stderr}${error}` }));
       child.once("close", (code) => resolve({ code, stdout, stderr }));
     });
+  const rexOpsRun = (configDir, args, options = {}) =>
+    new Promise((resolve) => {
+      const child = spawn(rexOps, args, { env: rexEnv(configDir), ...options });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.once("error", (error) => resolve({ code: -1, stdout, stderr: `${stderr}${error}` }));
+      child.once("close", (code) => resolve({ code, stdout, stderr }));
+    });
   // 用 script(1) 伪终端喂 rpassword。固定延时喂入存在竞态：回显关闭前写入的
   // 密码会被行规程回显进 transcript。改为检测到"密码"提示后立即喂入下一个答案，
   // 此时 rpassword 已关闭回显，密码不会进入输出。
@@ -73,6 +86,34 @@ function createHarness() {
     new Promise((resolve) => {
       const child = spawn("script", ["-qec",
         [rex, ...args].map((part) => `'${String(part).replace(/'/g, `'\\''`)}'`).join(" "),
+        "/dev/null"],
+      { env: rexEnv(configDir), stdio: ["pipe", "pipe", "pipe"] });
+      let output = "";
+      let fed = 0;
+      let seenPrompts = 0;
+      const onChunk = (chunk) => {
+        output += chunk;
+        const prompts = (String(chunk).match(/密码/g) || []).length;
+        if (prompts > 0) {
+          seenPrompts += prompts;
+          while (fed < seenPrompts && fed < answers.length) {
+            child.stdin.write(`${answers[fed]}\n`);
+            fed += 1;
+          }
+        }
+      };
+      const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+      child.stdout.on("data", onChunk);
+      child.stderr.on("data", onChunk);
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code, output });
+      });
+    });
+  const rexOpsRunPty = (configDir, args, answers, timeoutMs = 240000) =>
+    new Promise((resolve) => {
+      const child = spawn("script", ["-qec",
+        [rexOps, ...args].map((part) => `'${String(part).replace(/'/g, `'\\''`)}'`).join(" "),
         "/dev/null"],
       { env: rexEnv(configDir), stdio: ["pipe", "pipe", "pipe"] });
       let output = "";
@@ -162,10 +203,10 @@ function createHarness() {
     return { key, crt };
   };
   return {
-    secrets, redact, command, docker, until, privateFile, rexEnv, rexRun, rexRunPty,
+    secrets, redact, command, docker, until, privateFile, rexEnv, rexRun, rexOpsRun, rexRunPty, rexOpsRunPty,
     containerIp, fingerprintOf, setPasswords, pushFile, execFileSync, makeIdentity,
     leafCertificate, sha, sleep,
   };
 }
 
-module.exports = { createHarness, root, image, rex, daemonBinary, nodePackage };
+module.exports = { createHarness, root, image, rex, rexOps, daemonBinary, serverPackage, nodePackage };

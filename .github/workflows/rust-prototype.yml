@@ -1,19 +1,21 @@
-name: Rust 离线原型
+name: Rust 生产回归
 
 on:
   push:
     paths:
-      - 'prototype/**'
-      - 'scripts/build-rust-prototype.sh'
+      - 'rust/**'
+      - 'scripts/build-rust-release.sh'
       - 'test/rust-prototype/**'
-      - 'src/client/websocket.js'
+      - 'test/deploy/**'
+      - 'package.json'
       - '.github/workflows/rust-prototype.yml'
   pull_request:
     paths:
-      - 'prototype/**'
-      - 'scripts/build-rust-prototype.sh'
+      - 'rust/**'
+      - 'scripts/build-rust-release.sh'
       - 'test/rust-prototype/**'
-      - 'src/client/websocket.js'
+      - 'test/deploy/**'
+      - 'package.json'
       - '.github/workflows/rust-prototype.yml'
   workflow_dispatch:
 
@@ -23,39 +25,44 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: npm
+      - name: 安装 Node 测试依赖
+        run: npm ci
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.97.1'
           targets: x86_64-unknown-linux-musl
           components: rustfmt, clippy
       - name: 安装构建端依赖
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: 检查 Rust 源码
+        run: sudo apt-get update && sudo apt-get install -y musl-tools openssl
+      - name: 检查 Rust workspace
         run: |
-          cargo fmt --manifest-path rust/Cargo.toml -- --check
-          cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path rust/Cargo.toml
-      - name: 构建完整包并检查 2MB 门禁
-        run: bash scripts/build-rust-prototype.sh --address 127.0.0.1
-      - name: 验证现有客户端和异常行为
+          cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+          cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
+      - name: 构建 Rust 正式 x64 包
+        run: bash scripts/build-rust-release.sh --arch x64 --output-dir dist/rust-release
+      - name: 构建 Rust 集成测试镜像
+        run: docker build -t remote-exec-deploy:test -f test/deploy/Dockerfile test/deploy
+      - name: 验证 Rust 协议与 supervisor
         run: |
           node test/rust-prototype/runner.js
           node test/rust-prototype/drain.js
           node test/rust-prototype/supervisor.js
-      - name: 准备离线验证镜像
-        run: docker pull debian:12-slim
-      - name: 验证无网络无运行时安装
-        run: bash test/rust-prototype/offline.sh
+          node test/rust-prototype/phase2.js
+      - name: 验证 Rust 正式安装
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust-release/remote-exec-linux-x64.tar.gz
+        run: npm run test:rust-install
       - name: 验证架构状态
         run: node .agents/architecture-governance/check-state.mjs check --require-active
-      # 包包含服务器私钥，仅归档体积报告，不上传部署包或接入凭据。
       - uses: actions/upload-artifact@v4
         with:
-          name: rust-prototype-size
-          path: dist/rust-prototype/size.json
+          name: rust-release-size
+          path: dist/rust-release/size.json

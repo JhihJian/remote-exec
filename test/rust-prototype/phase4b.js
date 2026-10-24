@@ -16,7 +16,7 @@ const { createStore } = require("../../src/deploy/config-store.js");
 const { createHarness, root, image, rex, nodePackage } = require("./helpers.js");
 
 const {
-  secrets, redact, command, docker, until, rexRun, rexRunPty,
+  secrets, redact, command, docker, until, rexRun, rexOpsRun, rexRunPty,
   containerIp, fingerprintOf, setPasswords, pushFile, sha,
 } = createHarness();
 
@@ -118,7 +118,7 @@ async function main() {
     const nodeAssets = await execOn(container,
       "ls /opt/remote-exec/versions /opt/remote-exec/current 2>&1 | head -1");
     assert.match(nodeAssets, /No such file/);
-    result = await rexRun(home, ["migrate", "node-host",
+    result = await rexOpsRun(home, ["migrate", "node-host",
       "--package", releasePackage, "--identity", identity, "--host-key", fingerprint]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     assert.match(redact(result.stdout + result.stderr), /迁移完成：旧凭据（CA pin \+ token）验收通过/);
@@ -132,14 +132,14 @@ async function main() {
     pass("rex migrate 完成：supervisor 接管，Node 服务停用，旧凭据验收通过");
 
     // —— 重复迁移拒绝（Rust 布局已存在）——
-    result = await rexRun(home, ["migrate", "node-host",
+    result = await rexOpsRun(home, ["migrate", "node-host",
       "--package", releasePackage, "--identity", identity, "--host-key", fingerprint]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stdout + result.stderr), /预检失败/);
     pass("重复迁移被预检拒绝");
 
     // —— rollback：完整恢复 Node（含 Rust 资产清理）——
-    result = await rexRun(home, ["migrate", "node-host", "--rollback",
+    result = await rexOpsRun(home, ["migrate", "node-host", "--rollback",
       "--identity", identity, "--host-key", fingerprint]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     assert.match(redact(result.stdout + result.stderr), /已回滚到 Node 服务/);
@@ -152,14 +152,14 @@ async function main() {
     pass("rollback 完整恢复 Node 服务且清理全部 Rust 资产，旧凭据仍可用");
 
     // —— 回滚后再迁移（全流程可重入）——
-    result = await rexRun(home, ["migrate", "node-host",
+    result = await rexOpsRun(home, ["migrate", "node-host",
       "--package", releasePackage, "--identity", identity, "--host-key", fingerprint]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     assert.match(redact(result.stdout + result.stderr), /迁移完成/);
     pass("回滚后可重新迁移");
 
     // —— 迁移后 rex upgrade（自签叶子 backend-ca 兼容）——
-    result = await rexRun(home, ["upgrade", "node-host",
+    result = await rexOpsRun(home, ["upgrade", "node-host",
       "--package", releasePackage, "--identity", identity, "--host-key", fingerprint,
       "--retire-wait-secs", "30"]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));

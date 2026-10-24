@@ -16,10 +16,10 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { WssClient } = require("../../src/client/websocket.js");
 const { createStore } = require("../../src/deploy/config-store.js");
-const { createHarness, root, image, rex, daemonBinary, nodePackage } = require("./helpers.js");
+const { createHarness, root, image, rex, rexOps, daemonBinary, serverPackage } = require("./helpers.js");
 
 const {
-  secrets, redact, command, docker, until, privateFile, rexRun, rexRunPty,
+  secrets, redact, command, docker, until, privateFile, rexRun, rexOpsRun, rexOpsRunPty,
   containerIp, fingerprintOf, setPasswords, makeIdentity, leafCertificate, sha,
 } = createHarness();
 
@@ -46,11 +46,11 @@ async function rustPackage(dir, marker, binary) {
   return archive;
 }
 async function main() {
-  for (const file of [rex, daemonBinary, nodePackage, `${nodePackage}.sha256`]) {
+  for (const file of [rex, rexOps, daemonBinary, serverPackage, `${serverPackage}.sha256`]) {
     assert.ok(fs.existsSync(file), `缺少 ${file}。请先构建 rust musl 产物或设置环境变量。`);
   }
   const { checksumMatches } = require("../../src/deploy/bundle.js");
-  await checksumMatches(nodePackage, `${nodePackage}.sha256`);
+  await checksumMatches(serverPackage, `${serverPackage}.sha256`);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rex-phase3b-"));
   fs.chmodSync(tmp, 0o700);
@@ -123,8 +123,8 @@ async function main() {
     pass("两个隔离容器运行 systemd/SSH，密钥与密码就绪");
 
     // —— deploy：root 密钥认证完整安装 ——
-    let result = await rexRun(nodeHome, ["deploy", `node-key=root@${nodeIp}`, "--port", "9000",
-      "--identity", identity, "--host-key", nodeFingerprint, "--package", nodePackage]);
+    let result = await rexOpsRun(nodeHome, ["deploy", `node-key=root@${nodeIp}`, "--port", "9000",
+      "--identity", identity, "--host-key", nodeFingerprint, "--package", serverPackage]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     const nodeStore = createStore(path.join(nodeHome, ".config/remote-exec"));
     let nodeConfig = nodeStore.loadConfig().hosts["node-key"];
@@ -146,17 +146,17 @@ async function main() {
     }
     const accessState = async () => {
       const { stdout } = await docker(["exec", nodeHost, "bash", "-c",
-        "sha256sum /root/remote-exec-access/token.txt /root/remote-exec-access/server.crt /etc/remote-exec/credentials/server.key; stat -c '%a' /root/remote-exec-access/token.txt /etc/remote-exec/credentials/server.key; readlink /proc/$(systemctl show -p MainPID --value remote-exec.service)/exe"]);
+        "sha256sum /root/remote-exec-access/token.txt /root/remote-exec-access/ca.crt /etc/remote-exec/credentials/server.key; stat -c '%a' /root/remote-exec-access/token.txt /etc/remote-exec/credentials/server.key; readlink /proc/$(systemctl show -p MainPID --value remote-exec-supervisor.service)/exe"]);
       return stdout.trim();
     };
     const before = await accessState();
-    const { stdout: installMeta } = await docker(["exec", nodeHost, "cat", "/opt/remote-exec/install.json"]);
+    const { stdout: installMeta } = await docker(["exec", nodeHost, "cat", "/opt/remote-exec/release.json"]);
     assert.equal(JSON.parse(installMeta).port, 9000);
     pass("russh 密钥认证完成 root 直连部署、WSS 验收与登记");
 
     // —— deploy：重复部署幂等，凭据不变 ——
-    result = await rexRun(nodeHome, ["deploy", `node-key=root@${nodeIp}`, "--port", "9000",
-      "--identity", identity, "--host-key", nodeFingerprint, "--package", nodePackage]);
+    result = await rexOpsRun(nodeHome, ["deploy", `node-key=root@${nodeIp}`, "--port", "9000",
+      "--identity", identity, "--host-key", nodeFingerprint, "--package", serverPackage]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     assert.equal(await accessState(), before, "重复部署不得轮换凭据");
     {
@@ -175,29 +175,29 @@ async function main() {
     // —— deploy：指纹保护 ——
     const badStore = createStore(path.join(badHome, ".config/remote-exec"));
     badStore.saveFingerprint({ host: nodeIp, sshPort: 22 }, "SHA256:" + crypto.randomBytes(32).toString("base64").replace(/=+$/, "").slice(0, 43));
-    result = await rexRun(badHome, ["deploy", `node-bad=root@${nodeIp}`, "--port", "9000",
-      "--identity", identity, "--package", nodePackage]);
+    result = await rexOpsRun(badHome, ["deploy", `node-bad=root@${nodeIp}`, "--port", "9000",
+      "--identity", identity, "--package", serverPackage]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stderr + result.stdout), /指纹/);
     assert.deepEqual(badStore.loadConfig().hosts, {});
-    result = await rexRun(nodeHome, ["deploy", `node-key=root@${nodeIp}`, "--port", "9000",
+    result = await rexOpsRun(nodeHome, ["deploy", `node-key=root@${nodeIp}`, "--port", "9000",
       "--identity", identity, "--host-key", "SHA256:" + crypto.randomBytes(32).toString("base64").replace(/=+$/, "").slice(0, 43),
-      "--package", nodePackage]);
+      "--package", serverPackage]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stderr + result.stdout), /--host-key 不匹配/);
     pass("known 指纹与 --host-key 不匹配都会在认证前拒绝");
 
     // —— deploy：别名冲突与坏包保护 ——
     const snapshot = fs.readFileSync(path.join(nodeHome, ".config/remote-exec/hosts.json"), "utf8");
-    result = await rexRun(nodeHome, ["deploy", `node-key=root@${rustIp}`, "--port", "9000",
-      "--identity", identity, "--package", nodePackage]);
+    result = await rexOpsRun(nodeHome, ["deploy", `node-key=root@${rustIp}`, "--port", "9000",
+      "--identity", identity, "--package", serverPackage]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stderr + result.stdout), /别名/);
     assert.equal(fs.readFileSync(path.join(nodeHome, ".config/remote-exec/hosts.json"), "utf8"), snapshot);
     const badArchive = path.join(tmp, "bad.tar.gz");
     await command("bash", ["-c", `mkdir -p ${tmp}/bad-pkg && echo hi > ${tmp}/bad-pkg/hi.txt && tar -C ${tmp}/bad-pkg -czf ${badArchive} ./`]);
     fs.writeFileSync(`${badArchive}.sha256`, `${sha(fs.readFileSync(badArchive))}  bad.tar.gz\n`);
-    result = await rexRun(nodeHome, ["deploy", `node-badpkg=root@${nodeIp}`, "--port", "9000",
+    result = await rexOpsRun(nodeHome, ["deploy", `node-badpkg=root@${nodeIp}`, "--port", "9000",
       "--identity", identity, "--host-key", nodeFingerprint, "--package", badArchive]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stderr + result.stdout), /install\.sh/);
@@ -205,8 +205,8 @@ async function main() {
     pass("别名冲突与缺少 install.sh 的坏包都在部署前失败");
 
     // —— deploy：root 密码认证（伪终端喂 rpassword）——
-    result = await rexRunPty(pwHome, ["deploy", `node-pw=root@${nodeIp}`, "--port", "9000",
-      "--host-key", nodeFingerprint, "--package", nodePackage], [nodeRootPassword]);
+    result = await rexOpsRunPty(pwHome, ["deploy", `node-pw=root@${nodeIp}`, "--port", "9000",
+      "--host-key", nodeFingerprint, "--package", serverPackage], [nodeRootPassword]);
     assert.equal(result.code, 0, redact(result.output));
     assert.equal(redact(result.output).includes(nodeRootPassword), false, "输出不得泄漏 SSH 密码");
     {
@@ -223,8 +223,8 @@ async function main() {
     // —— deploy：错误密码三次后失败 ——
     const wrongPassword = crypto.randomBytes(24).toString("hex");
     secrets.push(wrongPassword);
-    result = await rexRunPty(pwHome, ["deploy", `node-wrong=root@${nodeIp}`, "--port", "9000",
-      "--host-key", nodeFingerprint, "--package", nodePackage],
+    result = await rexOpsRunPty(pwHome, ["deploy", `node-wrong=root@${nodeIp}`, "--port", "9000",
+      "--host-key", nodeFingerprint, "--package", serverPackage],
     [wrongPassword, wrongPassword, wrongPassword, wrongPassword]);
     assert.notEqual(result.code, 0);
     assert.equal(redact(result.output).includes(wrongPassword), false);
@@ -232,8 +232,8 @@ async function main() {
     pass("错误密码有限重试后失败，不泄漏任何密码");
 
     // —— deploy：sudo NOPASSWD 非 root 安装 ——
-    result = await rexRun(rustHome, ["deploy", `rust-ops=ops@${rustIp}`, "--port", "9001",
-      "--identity", identity, "--host-key", rustFingerprint, "--package", nodePackage]);
+    result = await rexOpsRun(rustHome, ["deploy", `rust-ops=ops@${rustIp}`, "--port", "9001",
+      "--identity", identity, "--host-key", rustFingerprint, "--package", serverPackage]);
     if (result.code !== 0) {
       throw new Error(redact(`ops 部署失败: ${result.stdout}${result.stderr}`));
     }
@@ -282,7 +282,7 @@ async function main() {
     await push(leaf.crt, "/etc/remote-exec/credentials/server.crt", "0644");
     await push(leaf.key, "/etc/remote-exec/credentials/server.key", "0600");
     await docker(["exec", rustHost, "bash", "-c",
-      `printf '%s' '${rustTokenSha}' > /etc/remote-exec/credentials/token.sha256 && chmod 0600 /etc/remote-exec/credentials/token.sha256`]);
+      `printf '%s' '${rustTokenSha}' > /etc/remote-exec/credentials/token.sha256 && chmod 0600 /etc/remote-exec/credentials/token.sha256 && chown -R remote-exec:remote-exec /etc/remote-exec/credentials`]);
     await docker(["exec", rustHost, "bash", "-c",
       `umask 077; printf '%s' '${creds.token}' > /root/remote-exec-access/token.txt`]);
     await docker(["exec", rustHost, "bash", "-c",
@@ -295,12 +295,12 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 UNIT
-systemctl daemon-reload && systemctl enable remote-exec-supervisor.service`]);
+systemctl daemon-reload && systemctl enable remote-exec-supervisor.service && systemctl restart remote-exec-supervisor.service`]);
     pass("生产布局凭据与 supervisor 单元就绪");
 
     // —— upgrade：首装 v1（ctl upgrade 无 previous）——
     const v1 = await rustPackage(tmp, "v1", daemonBinary);
-    result = await rexRun(rustHome, ["upgrade", "rust-ops", "--package", v1,
+    result = await rexOpsRun(rustHome, ["upgrade", "rust-ops", "--package", v1,
       "--identity", identity, "--host-key", rustFingerprint, "--retire-wait-secs", "60"]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     await docker(["exec", rustHost, "bash", "-c",
@@ -325,7 +325,7 @@ systemctl daemon-reload && systemctl enable remote-exec-supervisor.service`]);
     const heldExec = () => held.call("exec", { command: "cat /opt/remote-exec/current/marker", timeoutMs: 8000 });
     assert.equal((await heldExec()).exitCode, 0);
     const v2 = await rustPackage(tmp, "v2", daemonBinary);
-    result = await rexRun(rustHome, ["upgrade", "rust-host", "--package", v2,
+    result = await rexOpsRun(rustHome, ["upgrade", "rust-host", "--package", v2,
       "--identity", identity, "--host-key", rustFingerprint, "--retire-wait-secs", "60"]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     // 旧连接上的请求仍由老 generation 服务到 retire。
@@ -343,7 +343,7 @@ systemctl daemon-reload && systemctl enable remote-exec-supervisor.service`]);
     pass("零中断升级 v2：持连接可用、current 切换、旧 generation 退休");
 
     // —— upgrade：回滚 ——
-    result = await rexRun(rustHome, ["upgrade", "rust-host", "--rollback",
+    result = await rexOpsRun(rustHome, ["upgrade", "rust-host", "--rollback",
       "--identity", identity, "--host-key", rustFingerprint, "--retire-wait-secs", "60"]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     const afterRollback = await rexRun(rustHome, ["exec", "rust-host", "--", "cat /opt/remote-exec/current/marker"]);
@@ -356,7 +356,7 @@ systemctl daemon-reload && systemctl enable remote-exec-supervisor.service`]);
     fs.writeFileSync(brokenBinary, "#!/bin/sh\nexit 1\n");
     fs.chmodSync(brokenBinary, 0o755);
     const v3 = await rustPackage(tmp, "v3", brokenBinary);
-    result = await rexRun(rustHome, ["upgrade", "rust-host", "--package", v3,
+    result = await rexOpsRun(rustHome, ["upgrade", "rust-host", "--package", v3,
       "--identity", identity, "--host-key", rustFingerprint, "--retire-wait-secs", "30"]);
     assert.notEqual(result.code, 0, "坏包升级应失败");
     const afterFailure = await rexRun(rustHome, ["exec", "rust-host", "--", "cat /opt/remote-exec/current/marker"]);

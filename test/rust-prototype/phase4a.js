@@ -13,10 +13,10 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { WssClient } = require("../../src/client/websocket.js");
 const { createStore } = require("../../src/deploy/config-store.js");
-const { createHarness, root, image, rex, daemonBinary, nodePackage } = require("./helpers.js");
+const { createHarness, root, image, rex, rexOps, daemonBinary, serverPackage } = require("./helpers.js");
 
 const {
-  secrets, redact, command, docker, until, privateFile, rexRun, rexRunPty,
+  secrets, redact, command, docker, until, privateFile, rexRun, rexOpsRun, rexOpsRunPty,
   containerIp, fingerprintOf, setPasswords, pushFile, makeIdentity,
   leafCertificate, sha,
 } = createHarness();
@@ -60,11 +60,11 @@ async function checkExecViaRelay(configDir, name, expectedUser = "remote-exec") 
 }
 
 async function main() {
-  for (const file of [rex, daemonBinary, nodePackage, `${nodePackage}.sha256`]) {
+  for (const file of [rex, rexOps, daemonBinary, serverPackage, `${serverPackage}.sha256`]) {
     assert.ok(fs.existsSync(file), `缺少 ${file}。请先构建 rust musl 产物或设置环境变量。`);
   }
   const { checksumMatches } = require("../../src/deploy/bundle.js");
-  await checksumMatches(nodePackage, `${nodePackage}.sha256`);
+  await checksumMatches(serverPackage, `${serverPackage}.sha256`);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rex-phase4a-"));
   fs.chmodSync(tmp, 0o700);
@@ -124,8 +124,8 @@ async function main() {
     pass("网关 daemon（默认放行/受限放行）与目标容器就绪");
 
     // —— 密钥认证网关部署 + relay 验收 + 登记 ——
-    let result = await rexRun(homeMain, ["deploy", "--via", "gw", `tgt-key=root@${tgtIp}`,
-      "--port", "9000", "--identity", identity, "--host-key", tgtFingerprint, "--package", nodePackage]);
+    let result = await rexOpsRun(homeMain, ["deploy", "--via", "gw", `tgt-key=root@${tgtIp}`,
+      "--port", "9000", "--identity", identity, "--host-key", tgtFingerprint, "--package", serverPackage]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     const mainStore = createStore(path.join(homeMain, ".config/remote-exec"));
     let registered = mainStore.loadConfig().hosts["tgt-key"];
@@ -149,8 +149,8 @@ async function main() {
       return stdout.trim();
     };
     const before = await accessState();
-    result = await rexRun(homeMain, ["deploy", "--via", "gw", `tgt-key=root@${tgtIp}`,
-      "--port", "9000", "--identity", identity, "--host-key", tgtFingerprint, "--package", nodePackage]);
+    result = await rexOpsRun(homeMain, ["deploy", "--via", "gw", `tgt-key=root@${tgtIp}`,
+      "--port", "9000", "--identity", identity, "--host-key", tgtFingerprint, "--package", serverPackage]);
     assert.equal(result.code, 0, redact(result.stdout + result.stderr));
     assert.equal(await accessState(), before, "重复部署不得轮换凭据");
     await checkExecViaRelay(homeMain, "tgt-key");
@@ -160,30 +160,30 @@ async function main() {
     const badStore = createStore(path.join(homeBad, ".config/remote-exec"));
     badStore.saveFingerprint({ host: tgtIp, sshPort: 22 },
       "SHA256:" + crypto.randomBytes(32).toString("base64").replace(/=+$/, "").slice(0, 43));
-    result = await rexRun(homeBad, ["deploy", "--via", "gw", `tgt-bad=root@${tgtIp}`,
-      "--port", "9000", "--identity", identity, "--package", nodePackage]);
+    result = await rexOpsRun(homeBad, ["deploy", "--via", "gw", `tgt-bad=root@${tgtIp}`,
+      "--port", "9000", "--identity", identity, "--package", serverPackage]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stderr + result.stdout), /指纹/);
-    result = await rexRun(homeMain, ["deploy", "--via", "gw", `tgt-hk=root@${tgtIp}`,
+    result = await rexOpsRun(homeMain, ["deploy", "--via", "gw", `tgt-hk=root@${tgtIp}`,
       "--port", "9000", "--identity", identity,
       "--host-key", "SHA256:" + crypto.randomBytes(32).toString("base64").replace(/=+$/, "").slice(0, 43),
-      "--package", nodePackage]);
+      "--package", serverPackage]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stderr + result.stdout), /--host-key 不匹配/);
     assert.equal(mainStore.loadConfig().hosts["tgt-hk"], undefined);
     pass("known 指纹与 --host-key 不匹配都会在认证前拒绝");
 
     // —— 网段校验：gw2 只放行 10/8，docker 网段目标必须被拒 ——
-    result = await rexRun(homeMain, ["deploy", "--via", "gw2", `tgt-allow=root@${tgtIp}`,
-      "--port", "9000", "--identity", identity, "--host-key", tgtFingerprint, "--package", nodePackage]);
+    result = await rexOpsRun(homeMain, ["deploy", "--via", "gw2", `tgt-allow=root@${tgtIp}`,
+      "--port", "9000", "--identity", identity, "--host-key", tgtFingerprint, "--package", serverPackage]);
     assert.notEqual(result.code, 0);
     assert.match(redact(result.stderr + result.stdout), /允许网段/);
     assert.equal(mainStore.loadConfig().hosts["tgt-allow"], undefined);
     pass("受限网段网关拒绝非白名单目标");
 
     // —— root 密码认证（网关 SSH）+ 输出脱敏 ——
-    result = await rexRunPty(homePw, ["deploy", "--via", "gw", `tgt-pw=root@${tgtIp}`,
-      "--port", "9000", "--host-key", tgtFingerprint, "--package", nodePackage], [rootPassword]);
+    result = await rexOpsRunPty(homePw, ["deploy", "--via", "gw", `tgt-pw=root@${tgtIp}`,
+      "--port", "9000", "--host-key", tgtFingerprint, "--package", serverPackage], [rootPassword]);
     assert.equal(result.code, 0, redact(result.output));
     assert.ok(!result.output.includes(rootPassword), "密码不得出现在部署输出");
     const pwStore = createStore(path.join(homePw, ".config/remote-exec"));
@@ -195,8 +195,8 @@ async function main() {
     pass("root 密码认证经网关部署成功且输出脱敏");
 
     // —— 非根 sudo 认证（SUDO_PASSWORD_REQUIRED 经网关传递）——
-    result = await rexRunPty(homeOps, ["deploy", "--via", "gw", `tgt-ops=ops@${tgtIp}`,
-      "--port", "9000", "--host-key", tgtFingerprint, "--package", nodePackage], [opsPassword, opsPassword]);
+    result = await rexOpsRunPty(homeOps, ["deploy", "--via", "gw", `tgt-ops=ops@${tgtIp}`,
+      "--port", "9000", "--host-key", tgtFingerprint, "--package", serverPackage], [opsPassword, opsPassword]);
     assert.equal(result.code, 0, redact(result.output));
     assert.ok(!result.output.includes(opsPassword), "sudo 密码不得出现在部署输出");
     pass("非根 sudo 认证经网关部署成功");

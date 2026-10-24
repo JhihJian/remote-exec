@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const RELEASES: &str = "https://api.github.com/repos/JhihJian/remote-exec/releases/latest";
-const ASSET_NAMES: [&str; 3] = [
+const ASSET_NAMES: [&str; 2] = [
     "remote-exec-linux-x64.tar.gz",
     "remote-exec-linux-x64.tar.gz.sha256",
-    "install.sh",
 ];
 const DOWNLOAD_WINDOW: Duration = Duration::from_secs(900);
 
@@ -134,10 +133,12 @@ fn from_release(directory: &Path, on_progress: &mut dyn FnMut(&str)) -> Result<B
             paths.push(destination);
         }
         checksum_matches(&paths[0], &paths[1])?;
+        let installer = directory.join("install.sh");
+        extract_installer(&paths[0], &installer)?;
         Ok(Bundle {
             package: paths[0].clone(),
             checksum: paths[1].clone(),
-            installer: paths[2].clone(),
+            installer,
             directory: directory.to_owned(),
         })
     })

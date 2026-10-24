@@ -169,6 +169,7 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
 struct InstallOutput {
     token: String,
     certificate: String,
+    ca: String,
     version: String,
     run_user: String,
 }
@@ -189,6 +190,13 @@ impl InstallOutput {
             certificate: value
                 .get("certificate")
                 .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            ca: value
+                .get("ca")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .or_else(|| value.get("certificate").and_then(Value::as_str))
                 .unwrap_or_default()
                 .to_owned(),
             version: value
@@ -394,7 +402,16 @@ async fn install_steps(
     let certificate_result = ssh::exec(
         session,
         ssh_target,
-        "cat /root/remote-exec-access/server.crt",
+        "cat /root/remote-exec-access/server.crt || cat /etc/remote-exec/credentials/server.crt",
+        None,
+        Duration::from_secs(30),
+        None,
+    )
+    .await?;
+    let ca_result = ssh::exec(
+        session,
+        ssh_target,
+        "cat /root/remote-exec-access/ca.crt 2>/dev/null || cat /etc/remote-exec/credentials/ca.crt 2>/dev/null || cat /root/remote-exec-access/server.crt",
         None,
         Duration::from_secs(30),
         None,
@@ -403,7 +420,7 @@ async fn install_steps(
     let manifest_result = ssh::exec(
         session,
         ssh_target,
-        "cat /opt/remote-exec/install.json",
+        "cat /opt/remote-exec/release.json",
         None,
         Duration::from_secs(30),
         None,
@@ -420,15 +437,30 @@ async fn install_steps(
         .nth(1)
         .and_then(|rest| rest.split("-----END CERTIFICATE-----").next())
         .map(|body| format!("-----BEGIN CERTIFICATE-----{body}-----END CERTIFICATE-----\n"));
+    let ca = ca_result
+        .stdout
+        .find("-----BEGIN CERTIFICATE-----")
+        .and_then(|start| {
+            ca_result.stdout[start..]
+                .split("-----END CERTIFICATE-----")
+                .next()
+        })
+        .map(|body| format!("{body}-----END CERTIFICATE-----\n"));
     let manifest: Option<Value> = manifest_result
         .stdout
         .find('{')
         .and_then(|start| serde_json::from_str(&manifest_result.stdout[start..]).ok());
-    let ok = [&token_result, &certificate_result, &manifest_result]
-        .iter()
-        .all(|result| result.code == 0)
+    let ok = [
+        &token_result,
+        &certificate_result,
+        &ca_result,
+        &manifest_result,
+    ]
+    .iter()
+    .all(|result| result.code == 0)
         && token.is_some()
-        && certificate.is_some();
+        && certificate.is_some()
+        && ca.is_some();
     if !ok {
         return Err("无法取得目标接入资料".into());
     }
@@ -447,6 +479,7 @@ async fn install_steps(
     Ok(InstallOutput {
         token: token.expect("已校验"),
         certificate: certificate.expect("已校验"),
+        ca: ca.expect("已校验"),
         version: version.to_owned(),
         run_user: run_user.to_owned(),
     })
@@ -645,7 +678,7 @@ impl GatewayDeploy {
         let marker = format!("rex-deploy-{}", marker_hex());
         let envelope = serde_json::json!({
             "target": {"host": target.host, "port": target.port},
-            "auth": {"token": credentials.token, "ca": credentials.certificate},
+            "auth": {"token": credentials.token, "ca": credentials.ca},
             "request": {"method": "exec", "params": {
                 "command": format!("printf '\\n{marker}\\n'; id -un"),
                 "timeoutMs": 5000,
@@ -872,7 +905,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
             };
             let credentials = Credentials {
                 token: installed.token.clone(),
-                certificate: installed.certificate.clone(),
+                certificate: installed.ca.clone(),
             };
             store
                 .register(&record, &credentials, None, None)
@@ -890,6 +923,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                             sudo_password.as_deref().unwrap_or(""),
                             &installed.token,
                             &installed.certificate,
+                            &installed.ca,
                         ],
                     ));
                 }

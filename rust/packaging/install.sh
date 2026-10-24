@@ -181,13 +181,14 @@ prepare_credentials() {
 
 write_access() {
   install -m 0600 /etc/remote-exec/credentials/ca.crt /root/remote-exec-access/ca.crt
-  node_style_access
+  install -m 0600 /etc/remote-exec/credentials/server.crt /root/remote-exec-access/server.crt
+  write_access_hosts
   printf '%s\n' '客户端接入：' '1. 解包到自己的凭据目录，并将目录权限设为 700、文件权限设为 600。' '2. 将 hosts.json 中 ca 和 tokenFile 改为解包文件的绝对路径。' '3. 将该 hosts 条目合并到 ~/.config/remote-exec/hosts.json，保留其他主机。' '4. 多个地址并存时，可从证书 SAN 中选择实际可达地址填写 host。' '5. 使用正常 TLS 验证连接，请勿关闭证书校验。' > /root/remote-exec-access/README.txt
   tar -czf "$work_dir/access.tar.gz" -C /root remote-exec-access
   install -m 0600 "$work_dir/access.tar.gz" /root/remote-exec-access.tar.gz
 }
 
-node_style_access() {
+write_access_hosts() {
   local name
   name="$(hostname)"
   printf '{\n  "hosts": {\n    "%s": {\n      "host": "%s",\n      "port": %s,\n      "ca": "/ABSOLUTE/PATH/remote-exec-access/ca.crt",\n      "tokenFile": "/ABSOLUTE/PATH/remote-exec-access/token.txt"\n    }\n  }\n}\n' \

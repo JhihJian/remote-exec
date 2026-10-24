@@ -218,6 +218,7 @@ fn parse_install(params: &Value, allow_list: &[String]) -> Result<InstallRequest
 struct AccessInfo {
     token: String,
     certificate: String,
+    ca: String,
     version: String,
     run_user: String,
     port: u16,
@@ -226,9 +227,10 @@ struct AccessInfo {
 fn parse_access(
     token: &ssh::ExecOutcome,
     certificate: &ssh::ExecOutcome,
+    ca: &ssh::ExecOutcome,
     manifest: &ssh::ExecOutcome,
 ) -> Result<AccessInfo, RpcError> {
-    if token.code != 0 || certificate.code != 0 || manifest.code != 0 {
+    if token.code != 0 || certificate.code != 0 || ca.code != 0 || manifest.code != 0 {
         return Err(invalid("无法取得目标接入资料"));
     }
     let Some(token_line) = token
@@ -247,6 +249,15 @@ fn parse_access(
         return Err(invalid("无法取得目标接入资料"));
     };
     let certificate = format!("-----BEGIN CERTIFICATE-----{body}-----END CERTIFICATE-----\n");
+    let Some(ca_body) = ca
+        .stdout
+        .split("-----BEGIN CERTIFICATE-----")
+        .nth(1)
+        .and_then(|rest| rest.split("-----END CERTIFICATE-----").next())
+    else {
+        return Err(invalid("无法取得目标 CA 证书"));
+    };
+    let ca = format!("-----BEGIN CERTIFICATE-----{ca_body}-----END CERTIFICATE-----\n");
     let Some(start) = manifest.stdout.find('{') else {
         return Err(invalid("无法读取目标安装状态"));
     };
@@ -261,6 +272,7 @@ fn parse_access(
     Ok(AccessInfo {
         token: token_line.to_owned(),
         certificate,
+        ca,
         version: version.to_owned(),
         run_user: run_user.to_owned(),
         port: port as u16,
@@ -391,7 +403,17 @@ async fn install_on_target(
         &ssh::exec(
             session,
             target,
-            "cat /opt/remote-exec/install.json",
+            "cat /root/remote-exec-access/ca.crt 2>/dev/null || cat /etc/remote-exec/credentials/ca.crt 2>/dev/null || cat /root/remote-exec-access/server.crt",
+            None,
+            Duration::from_secs(30),
+            None,
+        )
+        .await
+        .map_err(invalid)?,
+        &ssh::exec(
+            session,
+            target,
+            "cat /opt/remote-exec/release.json",
             None,
             Duration::from_secs(30),
             None,
@@ -502,6 +524,7 @@ async fn run_install(
     Ok(json!({
         "token": access.token,
         "certificate": access.certificate,
+        "ca": access.ca,
         "version": access.version,
         "runUser": access.run_user,
         "port": access.port,

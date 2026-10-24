@@ -1,6 +1,5 @@
 //! 安装验收：/readyz + WSS exec 冒烟（等价 scripts/smoke.js，目标机无需 Node）。
 use crate::client::{self, Call, Interrupt};
-use base64::Engine;
 use serde_json::json;
 
 pub struct Options<'a> {
@@ -61,16 +60,11 @@ pub async fn run(opts: &Options<'_>) -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("RPC 验收失败: {e}"))?;
-    let exit = result.get("exitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
-    let stdout = result
-        .get("stdoutB64")
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            base64::engine::general_purpose::STANDARD
-                .decode(s)
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+    let exit = result
+        .get("exitCode")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1);
+    let stdout = client::decode_b64(&result, "stdoutB64");
     let output = String::from_utf8_lossy(&stdout);
     if exit != 0 || !output.contains("\nremote-exec-install-ok\n") {
         return Err("命令未正常完成".into());

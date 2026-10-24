@@ -14,13 +14,13 @@
 use crate::bundle;
 use crate::client::{self, Call, Interrupt};
 use crate::config::Store;
+use crate::output;
 use crate::upgrade::{
-    arg_value, ctl, drive_with_retry, mktemp_staging, output, parse_ssh_args, remove_staging,
-    unpack_generation, unix_now_secs, SshCommon, CONTROL_SOCKET, CREDENTIALS_DIR, CURRENT_LINK,
-    VERSIONS_DIR,
+    CONTROL_SOCKET, CREDENTIALS_DIR, CURRENT_LINK, SshCommon, VERSIONS_DIR, arg_value, ctl,
+    drive_with_retry, mktemp_staging, parse_ssh_args, remove_staging, unix_now_secs,
+    unpack_generation,
 };
 use remote_exec_ssh::{self as ssh, Target as SshTarget};
-use serde_json::Value;
 use std::time::Duration;
 
 const HELP: &str = "用法: rex migrate <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] \
@@ -111,7 +111,15 @@ async fn prepare_parallel(
 > /etc/systemd/system/remote-exec-supervisor.service && systemctl daemon-reload",
         layout.port, layout.run_user
     );
-    let outcome = ssh::exec(session, target, &script, None, Duration::from_secs(30), None).await?;
+    let outcome = ssh::exec(
+        session,
+        target,
+        &script,
+        None,
+        Duration::from_secs(30),
+        None,
+    )
+    .await?;
     if outcome.code != 0 {
         return Err(format!(
             "supervisor 单元安装失败（退出码 {}）: {}",
@@ -132,12 +140,28 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
 test -S {CONTROL_SOCKET} && exit 0; sleep 1; done; \
 echo 'supervisor 控制套接字未就绪' >&2; exit 1"
     );
-    let outcome = ssh::exec(session, target, &script, None, Duration::from_secs(120), None).await?;
+    let outcome = ssh::exec(
+        session,
+        target,
+        &script,
+        None,
+        Duration::from_secs(120),
+        None,
+    )
+    .await?;
     if outcome.code == 0 {
         return Ok(());
     }
     let recovery = restore_node_script();
-    let _ = ssh::exec(session, target, &recovery, None, Duration::from_secs(120), None).await;
+    let _ = ssh::exec(
+        session,
+        target,
+        &recovery,
+        None,
+        Duration::from_secs(120),
+        None,
+    )
+    .await;
     Err(format!(
         "切换失败（退出码 {}）: {}，已尝试恢复 Node 服务",
         outcome.code,
@@ -173,15 +197,13 @@ async fn verify_with_existing_credentials(
         &mut interrupt,
     )
     .await?;
-    use base64::Engine;
-    let stdout = value
-        .get("stdoutB64")
-        .and_then(Value::as_str)
-        .map(|s| base64::engine::general_purpose::STANDARD.decode(s).unwrap_or_default())
-        .unwrap_or_default();
-    let stdout = String::from_utf8_lossy(&stdout).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&client::decode_b64(&value, "stdoutB64"))
+        .trim()
+        .to_owned();
     if stdout != run_user {
-        return Err(format!("旧凭据验收失败：exec 以 {stdout} 执行（期望 {run_user}）"));
+        return Err(format!(
+            "旧凭据验收失败：exec 以 {stdout} 执行（期望 {run_user}）"
+        ));
     }
     Ok(())
 }
@@ -233,12 +255,7 @@ async fn migrate_flow(
     package_bytes: &[u8],
     sha256: &str,
 ) -> Result<(), String> {
-    ssh::upload_bytes(
-        session,
-        &format!("{staging}/package.tar.gz"),
-        package_bytes,
-    )
-    .await?;
+    ssh::upload_bytes(session, &format!("{staging}/package.tar.gz"), package_bytes).await?;
     let generation = prepare_parallel(session, target, layout, staging, sha256).await?;
     output(&format!(
         "{display} 并置安装完成（引导 {generation}，Node 服务未受影响）\n"
@@ -290,7 +307,15 @@ echo 'Node 服务端口未就绪' >&2; exit 1",
         restore_node_script(),
         layout.port
     );
-    let outcome = ssh::exec(&session, ssh_target, &script, None, Duration::from_secs(120), None).await?;
+    let outcome = ssh::exec(
+        &session,
+        ssh_target,
+        &script,
+        None,
+        Duration::from_secs(120),
+        None,
+    )
+    .await?;
     if outcome.code != 0 {
         return Err(format!(
             "回滚失败（退出码 {}）: {}",

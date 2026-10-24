@@ -94,10 +94,7 @@ pub(crate) fn parse_ssh_args(
 }
 
 pub(crate) fn output(text: &str) {
-    use std::io::Write;
-    let mut stderr = std::io::stderr().lock();
-    let _ = write!(stderr, "{text}");
-    let _ = stderr.flush();
+    crate::output(text)
 }
 
 /// SSH 连接参数（主机名已解析为真实地址），upgrade 与 migrate 共用。
@@ -112,14 +109,21 @@ pub(crate) struct SshCommon {
     pub host_key: Option<String>,
 }
 
-/// 指纹信任（与 deploy 相同：已知 > --host-key > 交互确认）。
-async fn trust_fingerprint(store: &Store, common: &SshCommon) -> Result<String, String> {
-    let fingerprint = ssh::inspect(&common.host, common.ssh_port).await?;
+/// 指纹信任裁决（与 deploy 相同：已知 > --host-key > 交互确认），通过则记录。
+/// inspect 方式由调用方决定（直连或网关 RPC）。
+pub(crate) async fn trust_known_fingerprint(
+    store: &Store,
+    name: &str,
+    host: &str,
+    ssh_port: u16,
+    host_key: Option<&str>,
+    fingerprint: &str,
+) -> Result<(), String> {
     let record = config::Target {
-        name: common.display.clone(),
-        host: common.host.clone(),
+        name: name.to_owned(),
+        host: host.to_owned(),
         port: 0,
-        ssh_port: common.ssh_port,
+        ssh_port,
         via: None,
     };
     let known = store.get_fingerprint(&record).map_err(|e| e.to_string())?;
@@ -127,21 +131,36 @@ async fn trust_fingerprint(store: &Store, common: &SshCommon) -> Result<String, 
     if known.as_deref().is_some_and(|known| known != fingerprint) {
         return Err("SSH 主机指纹发生变化，拒绝连接".into());
     }
-    if common.host_key.as_deref().is_some_and(|k| k != fingerprint) {
+    if host_key.is_some_and(|expected| expected != fingerprint) {
         return Err("SSH 主机指纹与 --host-key 不匹配".into());
     }
-    if !has_known && common.host_key.is_none() {
+    if !has_known && host_key.is_none() {
         let confirmed = prompt::confirm(&format!(
             "信任 {}:{} 的 SSH 指纹 {fingerprint}？",
-            common.host, common.ssh_port
+            host, ssh_port
         ))?;
         if !confirmed {
             return Err("未确认 SSH 主机指纹".into());
         }
     }
     store
-        .save_fingerprint(&record, &fingerprint)
+        .save_fingerprint(&record, fingerprint)
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 直连探测并裁决指纹信任。
+async fn trust_fingerprint(store: &Store, common: &SshCommon) -> Result<String, String> {
+    let fingerprint = ssh::inspect(&common.host, common.ssh_port).await?;
+    trust_known_fingerprint(
+        store,
+        &common.display,
+        &common.host,
+        common.ssh_port,
+        common.host_key.as_deref(),
+        &fingerprint,
+    )
+    .await?;
     Ok(fingerprint)
 }
 
@@ -194,10 +213,7 @@ where
                         common.ssh_user, common.host
                     ))?);
                 } else {
-                    output(&format!(
-                        "{} {}失败: {error}\n",
-                        common.display, verb
-                    ));
+                    output(&format!("{} {}失败: {error}\n", common.display, verb));
                     return Ok(1);
                 }
             }
@@ -211,11 +227,16 @@ pub(crate) async fn ctl(
     target: &SshTarget,
     args: &str,
 ) -> Result<Value, String> {
-    let command = format!(
-        "{} ctl --control {} {}",
-        CTL_BINARY, CONTROL_SOCKET, args
-    );
-    let outcome = ssh::exec(session, target, &command, None, Duration::from_secs(300), None).await?;
+    let command = format!("{} ctl --control {} {}", CTL_BINARY, CONTROL_SOCKET, args);
+    let outcome = ssh::exec(
+        session,
+        target,
+        &command,
+        None,
+        Duration::from_secs(300),
+        None,
+    )
+    .await?;
     if outcome.code != 0 {
         return Err(format!(
             "ctl {args} 失败（退出码 {}）: {}",
@@ -228,11 +249,16 @@ pub(crate) async fn ctl(
 }
 
 async fn ctl_raw(session: &ssh::Session, target: &SshTarget, args: &str) -> Result<(), String> {
-    let command = format!(
-        "{} ctl --control {} {}",
-        CTL_BINARY, CONTROL_SOCKET, args
-    );
-    let outcome = ssh::exec(session, target, &command, None, Duration::from_secs(300), None).await?;
+    let command = format!("{} ctl --control {} {}", CTL_BINARY, CONTROL_SOCKET, args);
+    let outcome = ssh::exec(
+        session,
+        target,
+        &command,
+        None,
+        Duration::from_secs(300),
+        None,
+    )
+    .await?;
     if outcome.code != 0 {
         return Err(format!(
             "ctl {args} 失败（退出码 {}）: {}",
@@ -304,8 +330,15 @@ test -x {VERSIONS_DIR}/{generation}/bin/remote-execd && \
 ln -sfn {VERSIONS_DIR}/{generation} {CURRENT_LINK}",
         package = ssh::shell_quote(package),
     );
-    let outcome =
-        ssh::exec(session, target, &script, None, Duration::from_secs(120), None).await?;
+    let outcome = ssh::exec(
+        session,
+        target,
+        &script,
+        None,
+        Duration::from_secs(120),
+        None,
+    )
+    .await?;
     if outcome.code != 0 {
         return Err(format!(
             "解包失败（退出码 {}）: {}",
@@ -363,8 +396,8 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
     };
     let bundle_ref = bundle.as_ref();
     let common_ref = &common;
-    let result = drive_with_retry(store, common_ref, "升级", |ssh_target| {
-        async move { drive_upgrade(&ssh_target, common_ref, bundle_ref, retire_wait).await }
+    let result = drive_with_retry(store, common_ref, "升级", |ssh_target| async move {
+        drive_upgrade(&ssh_target, common_ref, bundle_ref, retire_wait).await
     })
     .await;
     if let Some(bundle) = bundle {
@@ -440,10 +473,14 @@ async fn try_upgrade(
     bundle: &bundle::RawBundle,
     staging_path: &str,
 ) -> Result<Value, String> {
-    let package_data = std::fs::read(&bundle.package).map_err(|e| format!("读取升级包失败: {e}"))?;
+    let package_data =
+        std::fs::read(&bundle.package).map_err(|e| format!("读取升级包失败: {e}"))?;
     use sha2::Digest;
     let sha256 = sha2::Sha256::digest(&package_data);
-    let sha256 = sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let sha256 = sha256
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     ssh::upload_bytes(
         session,
         &format!("{staging_path}/package.tar.gz"),
@@ -470,9 +507,7 @@ async fn try_upgrade(
     let ca_probe = ssh::exec(
         session,
         ssh_target,
-        &format!(
-            "if test -f {CREDENTIALS_DIR}/ca.crt; then echo ca; else echo leaf; fi"
-        ),
+        &format!("if test -f {CREDENTIALS_DIR}/ca.crt; then echo ca; else echo leaf; fi"),
         None,
         Duration::from_secs(15),
         None,
@@ -522,7 +557,15 @@ async fn bootstrap_first_install(
 for _ in 1 2 3 4 5 6 7 8 9 10; do test -S {CONTROL_SOCKET} && exit 0; sleep 1; done; \
 echo 'supervisor 控制套接字未就绪' >&2; exit 1"
     );
-    let outcome = ssh::exec(session, ssh_target, &script, None, Duration::from_secs(120), None).await?;
+    let outcome = ssh::exec(
+        session,
+        ssh_target,
+        &script,
+        None,
+        Duration::from_secs(120),
+        None,
+    )
+    .await?;
     if outcome.code != 0 {
         return Err(format!(
             "首装引导失败（退出码 {}）: {}",

@@ -7,8 +7,8 @@ mod http;
 mod prompt;
 mod smoke;
 
-mod ui;
 mod migrate;
+mod ui;
 mod upgrade;
 
 use crate::client::{Call, Interrupt};
@@ -131,6 +131,13 @@ fn main() {
     }
 }
 
+pub fn output(text: &str) {
+    use std::io::Write;
+    let mut stderr = std::io::stderr().lock();
+    let _ = write!(stderr, "{text}");
+    let _ = stderr.flush();
+}
+
 fn fail(message: &str) -> ! {
     eprintln!("\x1b[31m{message}\x1b[0m");
     std::process::exit(1);
@@ -142,7 +149,11 @@ async fn list_hosts(store: &Store) -> Result<(), String> {
     let mut tasks = tokio::task::JoinSet::new();
     for (name, entry) in &hosts {
         let name = name.clone();
-        let host = entry.get("host").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let host = entry
+            .get("host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
         let port = entry.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
         let via = entry
             .get("via")
@@ -159,7 +170,12 @@ async fn list_hosts(store: &Store) -> Result<(), String> {
             };
             let mut interrupt = Interrupt(None);
             match client::call_host(&store, &name, &call, None, &mut interrupt).await {
-                Ok(_) => (name, address, via, format!("✓ {}ms", started.elapsed().as_millis())),
+                Ok(_) => (
+                    name,
+                    address,
+                    via,
+                    format!("✓ {}ms", started.elapsed().as_millis()),
+                ),
                 Err(e) => (
                     name,
                     address,
@@ -178,7 +194,11 @@ async fn list_hosts(store: &Store) -> Result<(), String> {
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, address, via, status) in rows {
-        let mark = if status.starts_with('✓') { "\x1b[32m" } else { "\x1b[31m" };
+        let mark = if status.starts_with('✓') {
+            "\x1b[32m"
+        } else {
+            "\x1b[31m"
+        };
         let name_padded = format!("{:<8}", name);
         let address_padded = format!("{:<22}", address);
         let via_padded = format!("{:<14}", via);
@@ -209,25 +229,8 @@ async fn one_shot_exec(store: &Store, args: &[String]) -> Result<(), String> {
         &mut interrupt,
     )
     .await?;
-    use base64::Engine;
-    let stdout = value
-        .get("stdoutB64")
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            base64::engine::general_purpose::STANDARD
-                .decode(s)
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
-    let stderr = value
-        .get("stderrB64")
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            base64::engine::general_purpose::STANDARD
-                .decode(s)
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+    let stdout = client::decode_b64(&value, "stdoutB64");
+    let stderr = client::decode_b64(&value, "stderrB64");
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(&stdout);
@@ -283,7 +286,7 @@ async fn one_shot_file(store: &Store, args: &[String], direction: Direction) -> 
             return Err(match direction {
                 Direction::Read => "用法: rex read <主机> <绝对路径>".into(),
                 Direction::Write => "用法: rex write <主机> <绝对路径>".into(),
-            })
+            });
         }
     };
     let mut interrupt = Interrupt(None);
@@ -314,16 +317,7 @@ async fn one_shot_file(store: &Store, args: &[String], direction: Direction) -> 
     )
     .await?;
     if let Direction::Read = direction {
-        use base64::Engine;
-        let content = value
-            .get("contentB64")
-            .and_then(|v| v.as_str())
-            .map(|s| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(s)
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
+        let content = client::decode_b64(&value, "contentB64");
         use std::io::Write;
         let mut out = std::io::stdout().lock();
         let _ = out.write_all(&content);
@@ -348,7 +342,7 @@ async fn transfer(store: &Store, args: &[String], direction: Direction) -> Resul
             return Err(match direction {
                 Direction::Read => "用法: rex download <主机> <远端绝对路径> <本地路径>".into(),
                 Direction::Write => "用法: rex upload <主机> <本地路径> <远端绝对路径>".into(),
-            })
+            });
         }
     };
     let entry = store.host(&host).map_err(|e| e.to_string())?;
@@ -395,19 +389,10 @@ fn smoke_options(args: &[String]) -> Result<smoke::Options<'_>, String> {
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
-        let value = args
-            .get(index + 1)
-            .ok_or(format!("{arg} 需要值"))?
-            .clone();
+        let value = args.get(index + 1).ok_or(format!("{arg} 需要值"))?.clone();
         match arg {
             "--host" => host = value,
-            "--port" => {
-                port = Some(
-                    value
-                        .parse()
-                        .map_err(|_| format!("无效端口: {value}"))?,
-                )
-            }
+            "--port" => port = Some(value.parse().map_err(|_| format!("无效端口: {value}"))?),
             "--ca" => ca = Some(value),
             "--token-file" => token_file = Some(value),
             "--expected-user" => expected_user = Some(value),
@@ -427,14 +412,4 @@ fn smoke_options(args: &[String]) -> Result<smoke::Options<'_>, String> {
 /// 参数字符串转 'static，避免生命周期传染（进程生命周期内有效）。
 fn leak_str(value: String) -> &'static str {
     Box::leak(value.into_boxed_str())
-}
-
-pub fn set_mode_600(path: &std::path::Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("设置 {} 权限失败: {e}", path.display()))?;
-    }
-    Ok(())
 }

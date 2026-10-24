@@ -60,10 +60,7 @@ fn read_json(path: &Path, fallback: Value) -> Result<Value, AnyError> {
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), AnyError> {
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        hex_random(12),
-    ));
+    let tmp = path.with_extension(format!("{}.tmp", hex_random(12),));
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
@@ -87,7 +84,9 @@ fn hex_random(bytes: usize) -> String {
         ^ (std::process::id() as u64) << 32;
     let mut out = String::with_capacity(bytes * 2);
     while out.len() < bytes * 2 {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         out.push_str(&format!("{:016x}", seed));
     }
     out.truncate(bytes * 2);
@@ -163,9 +162,7 @@ impl Store {
         target: &Target,
         hosts: &Map<String, Value>,
     ) -> Result<Option<Value>, AnyError> {
-        if !target
-            .name
-            .starts_with(|c: char| c.is_ascii_alphanumeric())
+        if !target.name.starts_with(|c: char| c.is_ascii_alphanumeric())
             || !target
                 .name
                 .chars()
@@ -247,7 +244,9 @@ impl Store {
                 .filter_map(Value::as_str)
                 .map(PathBuf::from)
             {
-                let Some(old_directory) = old.parent() else { continue };
+                let Some(old_directory) = old.parent() else {
+                    continue;
+                };
                 let owned = old_directory.parent() == Some(&directory)
                     && old_directory
                         .file_name()
@@ -272,7 +271,11 @@ impl Store {
 
     fn fingerprint_key(target: &Target) -> String {
         // 与 Node 端 JSON.stringify([via?"via":"direct", via||null, host, sshPort]) 一致。
-        let kind = if target.via.is_some() { "via" } else { "direct" };
+        let kind = if target.via.is_some() {
+            "via"
+        } else {
+            "direct"
+        };
         format!(
             "[\"{}\",{},\"{}\",{}]",
             kind,
@@ -415,17 +418,19 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(store
-            .register(
-                &target("nm24", "172.16.126.99", 18791, None),
-                &Credentials {
-                    token: "t".into(),
-                    certificate: "c".into(),
-                },
-                None,
-                None,
-            )
-            .is_err());
+        assert!(
+            store
+                .register(
+                    &target("nm24", "172.16.126.99", 18791, None),
+                    &Credentials {
+                        token: "t".into(),
+                        certificate: "c".into(),
+                    },
+                    None,
+                    None,
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -440,16 +445,18 @@ mod tests {
     fn register_rejects_bad_alias() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().to_path_buf());
-        assert!(store
-            .register(
-                &target("-bad", "10.0.0.1", 8791, None),
-                &Credentials {
-                    token: "t".into(),
-                    certificate: "c".into(),
-                },
-                None,
-                None,
-            )
-            .is_err());
+        assert!(
+            store
+                .register(
+                    &target("-bad", "10.0.0.1", 8791, None),
+                    &Credentials {
+                        token: "t".into(),
+                        certificate: "c".into(),
+                    },
+                    None,
+                    None,
+                )
+                .is_err()
+        );
     }
 }

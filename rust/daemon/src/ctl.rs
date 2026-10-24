@@ -342,7 +342,12 @@ fn upgrade(socket: &Path, args: &[String]) -> Result<Value, String> {
         // 目录内容标记一致且已是 active 时幂等成功，否则拒绝。
         let active = control(socket, &json!({"method": "status"}))
             .ok()
-            .and_then(|status| status.get("active").and_then(Value::as_str).map(str::to_owned));
+            .and_then(|status| {
+                status
+                    .get("active")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            });
         let marker_ok = fs::read_to_string(version_dir.join(".package-sha256"))
             .map(|text| text.trim() == expected)
             .unwrap_or(false);
@@ -360,8 +365,12 @@ fn upgrade(socket: &Path, args: &[String]) -> Result<Value, String> {
             .map_err(|error| format!("设置 {} 权限失败: {error}", version_dir.display()))?;
         unpack_package(&package_path, &version_dir)?;
         // 内容标记：同 id 重放时判定目录与包一致。
-        fs::write(version_dir.join(".package-sha256"), format!("{digest}\n"))
-            .map_err(|error| format!("写入 {} 失败: {error}", version_dir.join(".package-sha256").display()))
+        fs::write(version_dir.join(".package-sha256"), format!("{digest}\n")).map_err(|error| {
+            format!(
+                "写入 {} 失败: {error}",
+                version_dir.join(".package-sha256").display()
+            )
+        })
     })();
     if let Err(error) = prepare {
         cleanup_version_dir(&version_dir);

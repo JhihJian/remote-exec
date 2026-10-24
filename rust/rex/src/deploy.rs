@@ -2,10 +2,13 @@
 use crate::bundle;
 use crate::config::{self, Credentials, Store};
 use crate::prompt;
+use crate::upgrade::trust_known_fingerprint;
 use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+use crate::output;
 
 const HELP: &str = "用法: rex deploy [--via 网关名] [--port 8791] [--identity 私钥路径] [--package tar.gz] \
 [--ssh-port 22] [--host-key SHA256:...] [name=]user@IPv4 ...";
@@ -36,12 +39,12 @@ struct Options {
 fn is_ipv4(text: &str) -> bool {
     let parts: Vec<&str> = text.split('.').collect();
     parts.len() == 4
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit()) && {
+        && parts.iter().all(|p| {
+            !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit()) && {
                 let value: u32 = p.parse().unwrap_or(999);
                 value <= 255 && !(p.len() > 1 && p.starts_with('0'))
-            })
+            }
+        })
 }
 
 fn parse_options(args: &[String]) -> Result<Options, String> {
@@ -120,8 +123,9 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
                     Some(name)
                         if !name.is_empty()
                             && name.starts_with(|c: char| c.is_ascii_alphanumeric())
-                            && name.chars()
-                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) =>
+                            && name.chars().all(|c| {
+                                c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')
+                            }) =>
                     {
                         name.to_owned()
                     }
@@ -177,10 +181,26 @@ impl InstallOutput {
     /// 解析 deploy.ssh install 响应。
     fn from_rpc(value: &Value) -> Result<Self, String> {
         let output = Self {
-            token: value.get("token").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            certificate: value.get("certificate").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            version: value.get("version").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            run_user: value.get("runUser").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            token: value
+                .get("token")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            certificate: value
+                .get("certificate")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            version: value
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            run_user: value
+                .get("runUser")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
         };
         if output.is_valid() {
             Ok(output)
@@ -198,7 +218,10 @@ struct Transcript {
 
 impl Transcript {
     fn new() -> Self {
-        Self { text: String::new(), truncated: false }
+        Self {
+            text: String::new(),
+            truncated: false,
+        }
     }
 
     fn push(&mut self, stderr: bool, data: &[u8]) {
@@ -226,7 +249,15 @@ async fn install_target(
 ) -> Result<InstallOutput, String> {
     let session = ssh::connect(ssh_target).await?;
     let mut temporary: Option<String> = None;
-    let result = install_steps(&session, ssh_target, files, daemon_port, &mut temporary, on_output).await;
+    let result = install_steps(
+        &session,
+        ssh_target,
+        files,
+        daemon_port,
+        &mut temporary,
+        on_output,
+    )
+    .await;
     if let Err(error) = &result {
         // 安装失败：清理暂存目录（会话失效时重连清理）。
         if let Some(path) = &temporary {
@@ -284,7 +315,15 @@ async fn install_steps(
     on_output: &mut (dyn FnMut(bool, &[u8]) + Send),
 ) -> Result<InstallOutput, String> {
     // 提权探测：非 root 且无可用 sudo 时进入 sudo 密码重试循环。
-    let probe = ssh::exec(session, ssh_target, "true", None, Duration::from_secs(15), None).await?;
+    let probe = ssh::exec(
+        session,
+        ssh_target,
+        "true",
+        None,
+        Duration::from_secs(15),
+        None,
+    )
+    .await?;
     if probe.code != 0 {
         return Err(format!(
             "{}: 提权失败，请提供 sudo 密码并确认账户具有 sudo 权限",
@@ -394,8 +433,14 @@ async fn install_steps(
         return Err("无法取得目标接入资料".into());
     }
     let manifest = manifest.expect("已校验");
-    let version = manifest.get("version").and_then(Value::as_str).unwrap_or("");
-    let run_user = manifest.get("runUser").and_then(Value::as_str).unwrap_or("");
+    let version = manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let run_user = manifest
+        .get("runUser")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if version.is_empty() || run_user.is_empty() {
         return Err("无法读取目标安装状态".into());
     }
@@ -408,10 +453,7 @@ async fn install_steps(
 }
 
 /// 部署后验收：钉住安装返回的叶子证书直连 daemon 执行 marker 命令。
-async fn verify_target(
-    target: &DeployTarget,
-    credentials: &InstallOutput,
-) -> Result<(), String> {
+async fn verify_target(target: &DeployTarget, credentials: &InstallOutput) -> Result<(), String> {
     if !matches!(credentials.run_user.as_str(), "root" | "remote-exec") {
         return Err("安装返回了未知服务身份".into());
     }
@@ -435,7 +477,12 @@ async fn verify_target(
     };
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        crate::client::call_entry_pinned(&entry, &credentials.token, &credentials.certificate, &call),
+        crate::client::call_entry_pinned(
+            &entry,
+            &credentials.token,
+            &credentials.certificate,
+            &call,
+        ),
     )
     .await
     .map_err(|_| "daemon 验收超时".to_owned())?
@@ -463,7 +510,11 @@ impl GatewayDeploy {
             .map_err(|e| format!("读取 CA 失败 {}: {e}", entry.ca))?;
         std::fs::read_to_string(&entry.token_file)
             .map_err(|e| format!("读取 token 失败 {}: {e}", entry.token_file))?;
-        Ok(Self { name: name.to_owned(), entry, prepared: None })
+        Ok(Self {
+            name: name.to_owned(),
+            entry,
+            prepared: None,
+        })
     }
 
     async fn call(
@@ -500,20 +551,28 @@ impl GatewayDeploy {
     }
 
     /// 网关暂存 + 三件套上传（仅首次）。
-    async fn ensure_prepared(&mut self, store: &Store, bundle: &bundle::Bundle) -> Result<(), String> {
+    async fn ensure_prepared(
+        &mut self,
+        store: &Store,
+        bundle: &bundle::Bundle,
+    ) -> Result<(), String> {
         if self.prepared.is_some() {
             return Ok(());
         }
         let staged = self
             .call(store, serde_json::json!({"action": "prepare"}), None)
             .await?;
-        let id = staged.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let id = staged
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let files = staged.get("files").cloned().unwrap_or(Value::Null);
         if id.is_empty() || !files.is_object() {
             return Err("网关暂存准备失败".into());
         }
-        let ca = std::fs::read_to_string(&self.entry.ca)
-            .map_err(|e| format!("读取 CA 失败: {e}"))?;
+        let ca =
+            std::fs::read_to_string(&self.entry.ca).map_err(|e| format!("读取 CA 失败: {e}"))?;
         let token = std::fs::read_to_string(&self.entry.token_file)
             .map_err(|e| format!("读取 token 失败: {e}"))?
             .trim()
@@ -620,7 +679,11 @@ impl GatewayDeploy {
     async fn cleanup(&mut self, store: &Store) -> Option<String> {
         let id = self.prepared.take()?;
         match self
-            .call(store, serde_json::json!({"action": "cleanup", "id": id}), None)
+            .call(
+                store,
+                serde_json::json!({"action": "cleanup", "id": id}),
+                None,
+            )
             .await
         {
             Ok(_) => None,
@@ -633,15 +696,9 @@ fn marker_hex() -> String {
     format!("{:08x}", rand::random::<u32>())
 }
 
-/// 解码 exec 响应 stdoutB64。
+/// 解码 exec 响应 stdout。
 fn decode_stdout(result: &Value) -> String {
-    use base64::Engine;
-    result
-        .get("stdoutB64")
-        .and_then(Value::as_str)
-        .map(|s| base64::engine::general_purpose::STANDARD.decode(s).unwrap_or_default())
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default()
+    String::from_utf8_lossy(&crate::client::decode_b64(result, "stdoutB64")).into_owned()
 }
 
 /// 验收公共断言：退出码为 0 且输出尾部为 marker + 服务用户。
@@ -662,20 +719,9 @@ fn redact(text: &str, secrets: &[&str]) -> String {
     clean
 }
 
-fn output(text: &str) {
-    use std::io::Write;
-    let mut stderr = std::io::stderr().lock();
-    let _ = write!(stderr, "{text}");
-    let _ = stderr.flush();
-}
-
 /// deploy 入口：返回进程退出码（0 全部成功）。
 pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
-    let options = if args.first().map(String::as_str) == Some("deploy") {
-        parse_options(&args[1..])?
-    } else {
-        parse_options(args)?
-    };
+    let options = parse_options(args)?;
     let hosts = store.load().map_err(|e| e.to_string())?;
     for target in &options.targets {
         let record = config::Target {
@@ -697,9 +743,9 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
     };
     // 私钥统一在此读为 PEM 内容：直连与网关路径共用同一语义。
     let identity_pem = match &options.identity {
-        Some(path) => Some(
-            std::fs::read_to_string(path).map_err(|e| format!("读取私钥 {path} 失败: {e}"))?,
-        ),
+        Some(path) => {
+            Some(std::fs::read_to_string(path).map_err(|e| format!("读取私钥 {path} 失败: {e}"))?)
+        }
         None => None,
     };
     let cancelled = AtomicBool::new(false);
@@ -722,35 +768,15 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
             if !ssh::valid_fingerprint(&fingerprint) {
                 return Err("SSH 返回无效主机指纹".into());
             }
-            let record = config::Target {
-                name: target.name.clone(),
-                host: target.host.clone(),
-                port: target.port,
-                ssh_port: target.ssh_port,
-                via: None,
-            };
-            let known = store
-                .get_fingerprint(&record)
-                .map_err(|e| e.to_string())?;
-            let has_known = known.is_some();
-            if known.as_deref().is_some_and(|known| known != fingerprint) {
-                return Err("SSH 主机指纹发生变化，拒绝连接".into());
-            }
-            if options.host_key.as_deref().is_some_and(|k| k != fingerprint) {
-                return Err("SSH 主机指纹与 --host-key 不匹配".into());
-            }
-            if !has_known && options.host_key.is_none() {
-                let confirmed = prompt::confirm(&format!(
-                    "信任 {}:{} 的 SSH 指纹 {fingerprint}？",
-                    target.host, target.ssh_port
-                ))?;
-                if !confirmed {
-                    return Err("未确认 SSH 主机指纹".into());
-                }
-            }
-            store
-                .save_fingerprint(&record, &fingerprint)
-                .map_err(|e| e.to_string())?;
+            trust_known_fingerprint(
+                store,
+                &target.name,
+                &target.host,
+                target.ssh_port,
+                options.host_key.as_deref(),
+                &fingerprint,
+            )
+            .await?;
 
             let mut ssh_attempts = 0;
             let mut sudo_attempts = 0;

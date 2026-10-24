@@ -125,9 +125,10 @@ pub async fn inspect(host: &str, ssh_port: u16) -> Result<String, String> {
 /// 认证并返回可用会话。认证链：显式密码 > 显式私钥 > agent > 默认私钥。
 /// 全部失败返回带 AUTH_REQUIRED 前缀的错误，由调用方提示密码后重试。
 pub async fn connect(target: &Target) -> Result<Session, String> {
-    let expected = target.fingerprint.clone().ok_or_else(|| {
-        format!("内部错误: {} 未通过指纹校验即尝试连接", target.host)
-    })?;
+    let expected = target
+        .fingerprint
+        .clone()
+        .ok_or_else(|| format!("内部错误: {} 未通过指纹校验即尝试连接", target.host))?;
     let mut session = dial(target, Arc::new(VerifyMode::Expect(expected))).await?;
     let user = target.username.as_str();
 
@@ -144,10 +145,7 @@ pub async fn connect(target: &Target) -> Result<Session, String> {
 
     if let Some(pem) = &target.identity {
         let key = load_key(pem)?;
-        let with_hash = PrivateKeyWithHashAlg::new(
-            Arc::new(key.clone()),
-            rsa_hash_alg(&key),
-        );
+        let with_hash = PrivateKeyWithHashAlg::new(Arc::new(key.clone()), rsa_hash_alg(&key));
         return match session.authenticate_publickey(user, with_hash).await {
             Ok(AuthResult::Success) => Ok(session),
             Ok(_) => Err(format!("{AUTH_REQUIRED}: 私钥认证失败 {user}")),
@@ -163,9 +161,9 @@ pub async fn connect(target: &Target) -> Result<Session, String> {
                 continue;
             };
             let hash_alg = match key.algorithm() {
-                russh::keys::Algorithm::Rsa { hash } => Some(
-                    hash.unwrap_or(russh::keys::HashAlg::Sha256),
-                ),
+                russh::keys::Algorithm::Rsa { hash } => {
+                    Some(hash.unwrap_or(russh::keys::HashAlg::Sha256))
+                }
                 _ => None,
             };
             if let Ok(AuthResult::Success) = session
@@ -186,14 +184,8 @@ pub async fn connect(target: &Target) -> Result<Session, String> {
         let Ok(key) = russh::keys::load_secret_key(&path, None) else {
             continue;
         };
-        let with_hash = PrivateKeyWithHashAlg::new(
-            Arc::new(key.clone()),
-            rsa_hash_alg(&key),
-        );
-        if let Ok(AuthResult::Success) = session
-            .authenticate_publickey(user, with_hash)
-            .await
-        {
+        let with_hash = PrivateKeyWithHashAlg::new(Arc::new(key.clone()), rsa_hash_alg(&key));
+        if let Ok(AuthResult::Success) = session.authenticate_publickey(user, with_hash).await {
             return Ok(session);
         }
     }
@@ -205,8 +197,7 @@ pub async fn connect(target: &Target) -> Result<Session, String> {
 }
 
 fn load_key(pem: &str) -> Result<russh::keys::PrivateKey, String> {
-    russh::keys::decode_secret_key(pem, None)
-        .map_err(|_| "解析私钥 PEM 失败".to_owned())
+    russh::keys::decode_secret_key(pem, None).map_err(|_| "解析私钥 PEM 失败".to_owned())
 }
 
 /// 主机指纹格式校验：SHA256: 前缀 + 43 位 base64 字符（不含填充）。
@@ -248,8 +239,15 @@ pub async fn exec(
         ("sudo -n -- ".to_owned(), Vec::new())
     };
     let stdin = stdin_data.map(|d| d.to_vec()).unwrap_or(stdin);
-    run_with_prefix(session, target, &format!("{prefix}{command}"), stdin, timeout, on_output)
-        .await
+    run_with_prefix(
+        session,
+        target,
+        &format!("{prefix}{command}"),
+        stdin,
+        timeout,
+        on_output,
+    )
+    .await
 }
 
 /// 直连执行（不加 sudo 前缀），供需要原生 shell 语义的调用使用。
@@ -264,10 +262,7 @@ pub async fn exec_raw(
     run_with_prefix(session, target, command, stdin_data.to_vec(), timeout, None).await
 }
 
-async fn current_uid(
-    session: &Session,
-    target: &Target,
-) -> Result<u32, String> {
+async fn current_uid(session: &Session, target: &Target) -> Result<u32, String> {
     let outcome = run_with_prefix(
         session,
         target,
@@ -375,11 +370,7 @@ async fn run_with_prefix(
 }
 
 /// SFTP 上传字节到远端文件（0600），目标路径需已存在父目录。
-pub async fn upload_bytes(
-    session: &Session,
-    remote_path: &str,
-    data: &[u8],
-) -> Result<(), String> {
+pub async fn upload_bytes(session: &Session, remote_path: &str, data: &[u8]) -> Result<(), String> {
     use russh_sftp::client::SftpSession;
     use russh_sftp::protocol::FileAttributes;
     use russh_sftp::protocol::OpenFlags;

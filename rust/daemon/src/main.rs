@@ -1,6 +1,6 @@
 mod auth;
-mod deploy;
 mod ctl;
+mod deploy;
 mod exec;
 mod files;
 mod lifecycle;

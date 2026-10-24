@@ -49,24 +49,9 @@ impl RawBundle {
 
 pub fn resolve_raw(package: &str) -> Result<RawBundle, String> {
     let directory = tempfile_dir()?;
-    let source = Path::new(package);
-    let file_name = source
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("无效的本地包路径")?;
-    let payload = directory.join("payload");
-    std::fs::create_dir(&payload).map_err(|e| format!("创建 payload 目录失败: {e}"))?;
-    let copied = payload.join(file_name);
-    std::fs::copy(source, &copied).map_err(|e| format!("复制升级包失败: {e}"))?;
-    let checksum_source = PathBuf::from(format!("{}.sha256", source.display()));
-    let checksum = payload.join(format!("{file_name}.sha256"));
-    std::fs::copy(&checksum_source, &checksum)
-        .map_err(|e| format!("缺少校验文件 {}.sha256: {e}", source.display()))?;
-    checksum_matches(&copied, &checksum)?;
-    Ok(RawBundle {
-        package: copied,
-        directory,
-    })
+    let (package, checksum) = copy_with_checksum(Path::new(package), &directory)?;
+    checksum_matches(&package, &checksum)?;
+    Ok(RawBundle { package, directory })
 }
 
 fn tempfile_dir() -> Result<PathBuf, String> {
@@ -83,8 +68,8 @@ fn tempfile_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn from_local(source: &str, directory: &Path) -> Result<Bundle, String> {
-    let source = Path::new(source);
+/// 复制本地包与其 .sha256 兄弟文件到暂存 payload 目录，返回 (包, 校验) 路径。
+fn copy_with_checksum(source: &Path, directory: &Path) -> Result<(PathBuf, PathBuf), String> {
     let file_name = source
         .file_name()
         .and_then(|n| n.to_str())
@@ -92,10 +77,16 @@ fn from_local(source: &str, directory: &Path) -> Result<Bundle, String> {
     let payload = directory.join("payload");
     std::fs::create_dir(&payload).map_err(|e| format!("创建 payload 目录失败: {e}"))?;
     let package = payload.join(file_name);
-    let checksum = PathBuf::from(format!("{}.sha256", package.display()));
-    std::fs::copy(source, &package).map_err(|e| format!("复制部署包失败: {e}"))?;
-    let checksum_source = PathBuf::from(format!("{}.sha256", source.display()));    std::fs::copy(&checksum_source, &checksum)
+    let checksum = payload.join(format!("{file_name}.sha256"));
+    std::fs::copy(source, &package).map_err(|e| format!("复制包失败: {e}"))?;
+    let checksum_source = PathBuf::from(format!("{}.sha256", source.display()));
+    std::fs::copy(&checksum_source, &checksum)
         .map_err(|e| format!("缺少校验文件 {}.sha256: {e}", source.display()))?;
+    Ok((package, checksum))
+}
+
+fn from_local(source: &str, directory: &Path) -> Result<Bundle, String> {
+    let (package, checksum) = copy_with_checksum(Path::new(source), directory)?;
     checksum_matches(&package, &checksum)?;
     let installer = directory.join("install.sh");
     extract_installer(&package, &installer)?;
@@ -117,7 +108,8 @@ fn from_release(directory: &Path, on_progress: &mut dyn FnMut(&str)) -> Result<B
         let metadata = directory.join("release.json");
         download(RELEASES, &metadata, deadline, on_progress).await?;
         let release: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&metadata).map_err(|e| format!("读取 release.json 失败: {e}"))?,
+            &std::fs::read_to_string(&metadata)
+                .map_err(|e| format!("读取 release.json 失败: {e}"))?,
         )
         .map_err(|_| "GitHub latest 发布信息无效".to_owned())?;
         let tag = release
@@ -187,7 +179,9 @@ async fn fetch_with_resume(
 ) -> Result<(), String> {
     let existing = std::fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
     let request = if existing > 0 {
-        client.get(url).header("Range", format!("bytes={existing}-"))
+        client
+            .get(url)
+            .header("Range", format!("bytes={existing}-"))
     } else {
         client.get(url)
     };
@@ -228,7 +222,8 @@ async fn fetch_with_resume(
 }
 
 pub fn checksum_matches(package: &Path, checksum: &Path) -> Result<(), String> {
-    let content = std::fs::read_to_string(checksum).map_err(|e| format!("读取校验文件失败: {e}"))?;
+    let content =
+        std::fs::read_to_string(checksum).map_err(|e| format!("读取校验文件失败: {e}"))?;
     let expected = content.split_whitespace().next().unwrap_or("");
     if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("SHA256 文件格式错误".into());
@@ -236,7 +231,10 @@ pub fn checksum_matches(package: &Path, checksum: &Path) -> Result<(), String> {
     let data = std::fs::read(package).map_err(|e| format!("读取部署包失败: {e}"))?;
     use sha2::Digest;
     let actual = sha2::Sha256::digest(&data);
-    let actual = actual.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let actual = actual
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     if actual != expected.to_ascii_lowercase() {
         return Err("部署包 SHA256 校验失败".into());
     }
@@ -259,10 +257,7 @@ fn extract_installer(package: &Path, installer: &Path) -> Result<(), String> {
     if members.len() != 1 {
         return Err("部署包必须包含唯一 scripts/install.sh".into());
     }
-    let script = run_tar(
-        &["-xOzf", &package.to_string_lossy(), "--", members[0]],
-        1,
-    )?;
+    let script = run_tar(&["-xOzf", &package.to_string_lossy(), "--", members[0]], 1)?;
     if script.is_empty() {
         return Err("部署包 scripts/install.sh 内容为空或不是普通文件".into());
     }

@@ -1,7 +1,6 @@
 //! readline 交互模式：与 Node tui-client.js 同构的会话命令与输出习惯。
 use crate::client::{self, Call, Interrupt, StreamEvent};
 use crate::config::{self, Store};
-use base64::Engine;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::time::Instant;
@@ -27,15 +26,7 @@ struct State {
 }
 
 fn decode_b64(value: &Value, field: &str) -> Vec<u8> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .and_then(|s| {
-            base64::engine::general_purpose::STANDARD
-                .decode(s)
-                .ok()
-        })
-        .unwrap_or_default()
+    crate::client::decode_b64(value, field)
 }
 
 /// 以 Ctrl+C 为中断源执行一次调用。
@@ -68,7 +59,9 @@ async fn interrupted_call(
             }
         }));
     }
-    let callback_ref = callback.as_mut().map(|f| f.as_mut() as &mut (dyn FnMut(StreamEvent) + Send));
+    let callback_ref = callback
+        .as_mut()
+        .map(|f| f.as_mut() as &mut (dyn FnMut(StreamEvent) + Send));
     let call = client::call_host(store, host, call, callback_ref, &mut interrupt);
     tokio::select! {
         result = call => result,
@@ -98,10 +91,7 @@ pub async fn run(store: &Store, initial: Option<String>) -> Result<(), String> {
     let mut picking = false;
     if let Some(name) = initial {
         if !hosts.contains_key(&name) {
-            return Err(format!(
-                "未知主机 {name}，可用: {}",
-                names.join(", ")
-            ));
+            return Err(format!("未知主机 {name}，可用: {}", names.join(", ")));
         }
         state.host = name;
         state.cwd = config_host_cwd(&hosts, &state.host).unwrap_or_default();
@@ -182,7 +172,11 @@ pub async fn run(store: &Store, initial: Option<String>) -> Result<(), String> {
         dim(&format!(
             "会话结束：{} 条命令，主机 {}，用时 {}m{:02}s",
             state.commands,
-            if state.host.is_empty() { "-" } else { &state.host },
+            if state.host.is_empty() {
+                "-"
+            } else {
+                &state.host
+            },
             elapsed / 60,
             elapsed % 60
         ))
@@ -228,13 +222,18 @@ fn print_banner(hosts: &serde_json::Map<String, Value>, name: &str) {
 /// 返回 false 表示退出会话。
 async fn session_command(store: &Store, state: &mut State, line: &str) -> Result<bool, String> {
     let mut parts = line.split_whitespace();
-    let Some(command) = parts.next() else { return Ok(true) };
+    let Some(command) = parts.next() else {
+        return Ok(true);
+    };
     let arg: String = parts.collect::<Vec<_>>().join(" ");
     let hosts = store.load().map_err(|e| e.to_string())?;
     match command {
         "q" | "quit" | "exit" => Ok(false),
         "h" | "help" => {
-            println!("命令直接回车即在远端执行。会话命令:\n  :host [名]   列出/切换主机（relay 主机自动经网关）\n  :cd 目录      切换工作目录\n  :timeout 秒   设置单命令超时（当前 {}s）\n  :flow 命令    实时显示持续输出（Ctrl+C 停止）\n  :hosts       列出全部主机\n  :q           退出", state.timeout_ms / 1000);
+            println!(
+                "命令直接回车即在远端执行。会话命令:\n  :host [名]   列出/切换主机（relay 主机自动经网关）\n  :cd 目录      切换工作目录\n  :timeout 秒   设置单命令超时（当前 {}s）\n  :flow 命令    实时显示持续输出（Ctrl+C 停止）\n  :hosts       列出全部主机\n  :q           退出",
+                state.timeout_ms / 1000
+            );
             Ok(true)
         }
         "hosts" => {
@@ -435,10 +434,7 @@ fn print_exec_output(stdout: Vec<u8>, value: &Value, started: Instant) {
 fn print_summary(value: &Value, started: Instant, stream: bool) {
     let exit = value.get("exitCode").and_then(Value::as_i64).unwrap_or(-1);
     let elapsed = started.elapsed().as_secs_f64();
-    let mut parts = vec![
-        format!("exit={exit}"),
-        format!("{elapsed:.2}s"),
-    ];
+    let mut parts = vec![format!("exit={exit}"), format!("{elapsed:.2}s")];
     if stream {
         if let Some(reason) = value.get("reason").and_then(Value::as_str) {
             parts.push(reason.to_owned());

@@ -106,7 +106,10 @@ fn validate_target(target: &Value, allow_list: &[String]) -> Result<(String, u16
         .get("host")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("缺少 target.host"))?;
-    if !host.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+    if !host
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
         || host.len() > 253
         || !host
             .chars()
@@ -131,9 +134,7 @@ fn validate_target(target: &Value, allow_list: &[String]) -> Result<(String, u16
 }
 
 async fn action_inspect(params: &Value, allow_list: &[String]) -> Result<Value, RpcError> {
-    let target = params
-        .get("target")
-        .ok_or_else(|| invalid("缺少 target"))?;
+    let target = params.get("target").ok_or_else(|| invalid("缺少 target"))?;
     let (host, ssh_port) = validate_target(target, allow_list)?;
     let fingerprint = ssh::inspect(&host, ssh_port).await.map_err(invalid)?;
     Ok(json!({"fingerprint": fingerprint}))
@@ -157,15 +158,16 @@ fn secret_valid(secret: Option<&str>) -> bool {
 }
 
 fn parse_install(params: &Value, allow_list: &[String]) -> Result<InstallRequest, RpcError> {
-    let target = params
-        .get("target")
-        .ok_or_else(|| invalid("缺少 target"))?;
+    let target = params.get("target").ok_or_else(|| invalid("缺少 target"))?;
     let (host, ssh_port) = validate_target(target, allow_list)?;
     let username = target
         .get("username")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("缺少 SSH 用户名"))?;
-    if !username.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    if !username
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         || username.len() > 64
         || !username
             .chars()
@@ -185,7 +187,10 @@ fn parse_install(params: &Value, allow_list: &[String]) -> Result<InstallRequest
         .and_then(Value::as_u64)
         .filter(|p| (1..=65535).contains(p))
         .ok_or_else(|| invalid("daemon 端口无效"))? as u16;
-    let password = target.get("password").and_then(Value::as_str).map(str::to_owned);
+    let password = target
+        .get("password")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let sudo_password = target
         .get("sudoPassword")
         .and_then(Value::as_str)
@@ -193,7 +198,10 @@ fn parse_install(params: &Value, allow_list: &[String]) -> Result<InstallRequest
     if !secret_valid(password.as_deref()) || !secret_valid(sudo_password.as_deref()) {
         return Err(invalid("密码包含无效字符"));
     }
-    let identity = target.get("identity").and_then(Value::as_str).map(str::to_owned);
+    let identity = target
+        .get("identity")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     Ok(InstallRequest {
         host,
         ssh_port,
@@ -242,8 +250,8 @@ fn parse_access(
     let Some(start) = manifest.stdout.find('{') else {
         return Err(invalid("无法读取目标安装状态"));
     };
-    let config: Value =
-        serde_json::from_str(&manifest.stdout[start..]).map_err(|_| invalid("无法读取目标安装状态"))?;
+    let config: Value = serde_json::from_str(&manifest.stdout[start..])
+        .map_err(|_| invalid("无法读取目标安装状态"))?;
     let version = config.get("version").and_then(Value::as_str).unwrap_or("");
     let run_user = config.get("runUser").and_then(Value::as_str).unwrap_or("");
     let port = config.get("port").and_then(Value::as_u64).unwrap_or(0);
@@ -278,9 +286,8 @@ fn read_bundle_files(directory: &Path) -> Result<BundleFiles, RpcError> {
 
 /// 目标暂存目录名校验：必须由 mktemp 在约定前缀下生成。
 fn valid_temp_dir(path: &str) -> bool {
-    path.strip_prefix(TMP_PREFIX).is_some_and(|tail| {
-        tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_alphanumeric())
-    })
+    path.strip_prefix(TMP_PREFIX)
+        .is_some_and(|tail| tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 /// 单条安装输出（stderr 标记 + 数据），成功后统一脱敏交付。
@@ -340,9 +347,16 @@ async fn install_on_target(
         ssh::shell_quote(&target.host),
         daemon_port
     );
-    let result = ssh::exec(session, target, &command, None, INSTALL_TIMEOUT, Some(&mut collector))
-        .await
-        .map_err(invalid)?;
+    let result = ssh::exec(
+        session,
+        target,
+        &command,
+        None,
+        INSTALL_TIMEOUT,
+        Some(&mut collector),
+    )
+    .await
+    .map_err(invalid)?;
     if outputs.iter().map(|(_, data)| data.len()).sum::<usize>() > INSTALL_OUTPUT_LIMIT {
         return Err(invalid("SSH 操作输出超过上限"));
     }
@@ -354,15 +368,36 @@ async fn install_on_target(
     }
     // 接入资料由专门响应交付，不进入安装日志，TLS 私钥留在目标。
     let access = parse_access(
-        &ssh::exec(session, target, "cat /root/remote-exec-access/token.txt", None, Duration::from_secs(30), None)
-            .await
-            .map_err(invalid)?,
-        &ssh::exec(session, target, "cat /root/remote-exec-access/server.crt", None, Duration::from_secs(30), None)
-            .await
-            .map_err(invalid)?,
-        &ssh::exec(session, target, "cat /opt/remote-exec/install.json", None, Duration::from_secs(30), None)
-            .await
-            .map_err(invalid)?,
+        &ssh::exec(
+            session,
+            target,
+            "cat /root/remote-exec-access/token.txt",
+            None,
+            Duration::from_secs(30),
+            None,
+        )
+        .await
+        .map_err(invalid)?,
+        &ssh::exec(
+            session,
+            target,
+            "cat /root/remote-exec-access/server.crt",
+            None,
+            Duration::from_secs(30),
+            None,
+        )
+        .await
+        .map_err(invalid)?,
+        &ssh::exec(
+            session,
+            target,
+            "cat /opt/remote-exec/install.json",
+            None,
+            Duration::from_secs(30),
+            None,
+        )
+        .await
+        .map_err(invalid)?,
     )?;
     Ok((access, outputs))
 }
@@ -378,7 +413,11 @@ async fn action_install(
         return Err(invalid("缺少部署暂存标识"));
     };
     let request = parse_install(params, allow_list)?;
-    let entry = staging_map().lock().expect("暂存锁").get(staging_id).cloned();
+    let entry = staging_map()
+        .lock()
+        .expect("暂存锁")
+        .get(staging_id)
+        .cloned();
     let Some(entry) = entry else {
         return Err(invalid("部署暂存不存在或正在使用"));
     };
@@ -422,16 +461,12 @@ async fn run_install(
         let cleanup = ssh::exec(&session, &target, &command, None, CLEANUP_TIMEOUT, None).await;
         let cleanup = match cleanup {
             Ok(_) => Ok(()),
-            Err(_) => {
-                match ssh::connect(&target).await {
-                    Ok(fresh) => {
-                        ssh::exec(&fresh, &target, &command, None, CLEANUP_TIMEOUT, None)
-                            .await
-                            .map(|_| ())
-                    }
-                    Err(retry_error) => Err(retry_error),
-                }
-            }
+            Err(_) => match ssh::connect(&target).await {
+                Ok(fresh) => ssh::exec(&fresh, &target, &command, None, CLEANUP_TIMEOUT, None)
+                    .await
+                    .map(|_| ()),
+                Err(retry_error) => Err(retry_error),
+            },
         };
         if let Err(cleanup_error) = cleanup {
             let context = result

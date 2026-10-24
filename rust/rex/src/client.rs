@@ -7,13 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
-    WebSocketStream,
-    client_async_with_config,
+    WebSocketStream, client_async_with_config,
     tungstenite::{
-        Message,
-        client::IntoClientRequest,
-        handshake::client::Response,
-        protocol::WebSocketConfig,
+        Message, client::IntoClientRequest, handshake::client::Response, protocol::WebSocketConfig,
     },
 };
 
@@ -37,12 +33,9 @@ async fn connect_tls(
         .await
         .map_err(|_| format!("连接 {host}:{port} 超时"))??;
     let connector = tokio_rustls::TlsConnector::from(config);
-    let tls = tokio::time::timeout(
-        Duration::from_secs(15),
-        connector.connect(server_name, tcp),
-    )
-    .await
-    .map_err(|_| format!("TLS 握手 {host}:{port} 超时"))??;
+    let tls = tokio::time::timeout(Duration::from_secs(15), connector.connect(server_name, tcp))
+        .await
+        .map_err(|_| format!("TLS 握手 {host}:{port} 超时"))??;
     Ok(tls)
 }
 
@@ -77,7 +70,12 @@ impl rustls::client::danger::ServerCertVerifier for PinnedVerifier {
         cert: &rustls_pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -86,11 +84,18 @@ impl rustls::client::danger::ServerCertVerifier for PinnedVerifier {
         cert: &rustls_pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -124,12 +129,9 @@ async fn connect_tls_pinned(
         .await
         .map_err(|_| format!("连接 {host}:{port} 超时"))??;
     let connector = tokio_rustls::TlsConnector::from(config);
-    let tls = tokio::time::timeout(
-        Duration::from_secs(15),
-        connector.connect(server_name, tcp),
-    )
-    .await
-    .map_err(|_| format!("TLS 握手 {host}:{port} 超时"))??;
+    let tls = tokio::time::timeout(Duration::from_secs(15), connector.connect(server_name, tcp))
+        .await
+        .map_err(|_| format!("TLS 握手 {host}:{port} 超时"))??;
     Ok(tls)
 }
 
@@ -177,6 +179,16 @@ pub struct Call {
 /// 中断句柄：SIGINT 或用户取消时触发，连接被丢弃，服务端检测断连终止子进程。
 pub struct Interrupt(pub Option<tokio::sync::oneshot::Receiver<()>>);
 
+/// 解码响应中 base64 字段（缺失或无效时为空）。
+pub(crate) fn decode_b64(value: &Value, field: &str) -> Vec<u8> {
+    use base64::Engine;
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
+        .unwrap_or_default()
+}
+
 fn rpc_error_text(code: i64, message: &str) -> String {
     format!("rpc {code}: {message}")
 }
@@ -217,13 +229,9 @@ pub async fn call_host(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let (mut ws, _) = wss_handshake(
-        tls,
-        name_or(&gateway_entry),
-        &gateway_token,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let (mut ws, _) = wss_handshake(tls, name_or(&gateway_entry), &gateway_token)
+        .await
+        .map_err(|e| e.to_string())?;
     let envelope = json!({
         "target": {"host": entry.host, "port": entry.port},
         "auth": {"token": token, "ca": ca_pem},
@@ -256,11 +264,16 @@ pub async fn call_entry(
     on_event: Option<&mut (dyn FnMut(StreamEvent) + Send)>,
     interrupt: &mut Interrupt,
 ) -> Result<Value, String> {
-    let ca_pem =
-        std::fs::read_to_string(&entry.ca).map_err(|e| format!("读取 CA 失败 {}: {e}", entry.ca))?;
-    let tls = connect_tls(&entry.host, entry.port, entry.servername.as_deref(), &ca_pem)
-        .await
-        .map_err(|e| e.to_string())?;
+    let ca_pem = std::fs::read_to_string(&entry.ca)
+        .map_err(|e| format!("读取 CA 失败 {}: {e}", entry.ca))?;
+    let tls = connect_tls(
+        &entry.host,
+        entry.port,
+        entry.servername.as_deref(),
+        &ca_pem,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let (mut ws, _) = wss_handshake(tls, name_or(entry), token)
         .await
         .map_err(|e| e.to_string())?;
@@ -275,9 +288,14 @@ pub async fn call_entry_pinned(
     cert_pem: &str,
     call: &Call,
 ) -> Result<Value, String> {
-    let tls = connect_tls_pinned(&entry.host, entry.port, entry.servername.as_deref(), cert_pem)
-        .await
-        .map_err(|e| e.to_string())?;
+    let tls = connect_tls_pinned(
+        &entry.host,
+        entry.port,
+        entry.servername.as_deref(),
+        cert_pem,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let (mut ws, _) = wss_handshake(tls, name_or(entry), token)
         .await
         .map_err(|e| e.to_string())?;

@@ -2,14 +2,14 @@
 
 客户端运行一条命令即可安装并接入目标设备。省略 `--via` 时，客户端直接通过 SSH 部署；指定网关时，由网关执行 SSH，安装完成后通过 relay 使用目标。
 
-本页描述的是 Node 正式 daemon 的 `rex deploy` 路径。Rust 离线原型使用独立的静态包和安装脚本，当前不接入 `rex deploy` 的 `deploy.ssh` 编排；其免密 SSH 一行安装方式见 [Rust 离线原型](RUST_OFFLINE_PROTOTYPE.md)。
+本页描述的是运维扩展 `rex-ops deploy` 路径。核心 `rex` 客户端不加载 SSH/SFTP 依赖；Rust daemon 的 `deploy.ssh` 网关接口属于可选 `ops` feature。Rust 离线原型的免密 SSH 一行安装方式仍见 [Rust 离线原型](RUST_OFFLINE_PROTOTYPE.md)。
 
 ```bash
-rex deploy root@192.168.1.101
-rex deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.16.126.102
+rex-ops deploy root@192.168.1.101
+rex-ops deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.16.126.102
 ```
 
-仓库内可用 `./rex.sh deploy ...`，或通过 `npm install -g .` 安装 `rex`。客户端需要 Node.js 18+、curl 和 tar。目标保持现有安装器的 Linux x86_64、systemd 和 root/sudo 要求。网关部署需要网关运行包含 `deploy.ssh` 的当前版本，并已配置在客户端 `hosts.json` 中。
+仓库内可用 `./rex.sh deploy ...`，它会路由到 `rex-ops`。直接使用扩展时执行 `rex-ops deploy ...`。网关部署需要网关运行包含 `deploy.ssh` 的 daemon，并已配置在客户端 `hosts.json` 中。
 
 ## 命令参数
 

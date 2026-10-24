@@ -1,5 +1,6 @@
 mod auth;
 mod ctl;
+#[cfg(feature = "ops")]
 mod deploy;
 mod exec;
 mod files;

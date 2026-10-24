@@ -1,4 +1,4 @@
-//! rex upgrade：对已部署主机执行两段式升级（ctl upgrade + drain 等待 + retire）。
+//! rex-ops upgrade：对已部署主机执行两段式升级（ctl upgrade + drain 等待 + retire）。
 //! 前提：目标已按生产布局安装（/opt/remote-exec/{versions,current}、
 //! /run/remote-exec/supervisor.sock、/etc/remote-exec/credentials）。
 //! --via 网关主机升级属 Phase 4/5；本子命令只支持可直连 SSH 的主机。
@@ -9,7 +9,7 @@ use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use serde_json::Value;
 use std::time::Duration;
 
-const HELP: &str = "用法: rex upgrade <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] \
+const HELP: &str = "用法: rex-ops upgrade <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] \
 [--identity 私钥] [--host-key 指纹] [--retire-wait-secs 300] [--rollback]";
 
 pub(crate) const VERSIONS_DIR: &str = "/opt/remote-exec/versions";
@@ -503,7 +503,7 @@ async fn try_upgrade(
         // daemon generation 仍统一由下方 ctl upgrade 创建。
         bootstrap_first_install(session, ssh_target, &sha256, staging_path).await?;
     }
-    // backend CA：正式 CA 优先；rex migrate 迁移主机沿用 Node 自签叶子（pin 校验）。
+    // backend CA：正式 CA 优先；rex-ops migrate 迁移主机沿用 Node 自签叶子（pin 校验）。
     let ca_probe = ssh::exec(
         session,
         ssh_target,

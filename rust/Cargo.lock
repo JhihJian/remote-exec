@@ -1750,6 +1750,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-exec-ops"
+version = "0.1.0"
+dependencies = [
+ "remote-exec-rex",
+ "tokio",
+]
+
+[[package]]
 name = "remote-exec-rex"
 version = "0.1.0"
 dependencies = [

@@ -41,11 +41,13 @@ async fn connect_tls(
 
 /// 钉住单张叶子证书的验证器：仅当服务端出示的证书与预置证书逐字节一致时通过。
 /// 用于部署验收——证书刚经 SSH root 通道取得，钉住即绑定信任，兼容自签叶子。
+#[cfg(feature = "ops")]
 #[derive(Debug)]
 struct PinnedVerifier {
     cert_der: Vec<u8>,
 }
 
+#[cfg(feature = "ops")]
 impl rustls::client::danger::ServerCertVerifier for PinnedVerifier {
     fn verify_server_cert(
         &self,
@@ -100,6 +102,7 @@ impl rustls::client::danger::ServerCertVerifier for PinnedVerifier {
 }
 
 /// 以钉住叶子证书建立 TLS 连接（不经 CA 验证）。cert_pem 必须恰好包含一张证书。
+#[cfg(feature = "ops")]
 async fn connect_tls_pinned(
     host: &str,
     port: u16,
@@ -180,7 +183,7 @@ pub struct Call {
 pub struct Interrupt(pub Option<tokio::sync::oneshot::Receiver<()>>);
 
 /// 解码响应中 base64 字段（缺失或无效时为空）。
-pub(crate) fn decode_b64(value: &Value, field: &str) -> Vec<u8> {
+pub fn decode_b64(value: &Value, field: &str) -> Vec<u8> {
     use base64::Engine;
     value
         .get(field)
@@ -282,6 +285,7 @@ pub async fn call_entry(
 }
 
 /// 部署验收专用：钉住刚安装的叶子证书直连调用，不经 CA 验证。
+#[cfg(feature = "ops")]
 pub async fn call_entry_pinned(
     entry: &HostEntry,
     token: &str,

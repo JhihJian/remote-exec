@@ -40,7 +40,7 @@
     },
     {
       "id": "rpc-operation-boundary",
-      "conclusion": "RPC 服务器暴露 `exec`、`exec.stream`、`file.read`、`file.write`、`relay` 和 `deploy.ssh` 六类方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。",
+      "conclusion": "RPC 服务器默认暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类核心方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。`deploy.ssh` 仅在构建 daemon 的 `ops` feature 时启用，属于可选运维扩展，不进入核心服务包。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -97,7 +97,7 @@
     },
     {
       "id": "client-adapter-boundary",
-      "conclusion": "客户端负责直连和深度为一的 relay 编排。rex（Rust）是默认操作客户端，覆盖直连、单跳 relay、HTTP 流式传输与交互会话；Node.js 客户端在迁移期承接 deploy 路径。Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。",
+      "conclusion": "客户端负责直连和深度为一的 relay 编排。Rust `rex` 是核心操作客户端，覆盖直连、单跳 relay、HTTP 流式传输与交互会话；`rex-ops` 独立承接 SSH 部署、升级和迁移。Node.js 客户端与部署路径在迁移期继续保留。Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -188,7 +188,7 @@
     },
     {
       "id": "rust-offline-prototype-boundary",
-      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。Rust 客户端 rex 已交付：直接复用现有 ~/.config/remote-exec/hosts.json（含 credentials/.deploy.lock 与 Node config-store 同格式互操作），提供一次性 exec/read/write/upload/download/smoke 子命令、hosts 并行探测与 readline 交互会话（:host/:cd/:timeout/:flow/:hosts/:q、PWD 跟随、二进制预览、退出摘要），relay 主机经网关信封协议访问但暂不支持 HTTP 流式传输；rex.sh 已将非 deploy 入口切换到 rex 二进制（deploy 仍走 Node，待 Phase 3b）。正式 SSH 部署仍在迁移过程中。",
+      "conclusion": "Rust 离线原型独立实现 TLS/WSS 命令、文件服务和受白名单限制的单跳 relay，并已实现 daemon 排空、supervisor 状态机与生产化（重启恢复、--run-user 降权、控制面同 uid 校验）以及 ctl 两段式升级编排（升级/回滚/retire，在途连接零中断）；使用 x86_64 或 ARM64 的 musl 静态构建和部署端生成的凭据验证小于 2MB 的完整服务器包，并在 x86_64 与 ARM64 实机完成升级、回滚与重启恢复验收。Rust 客户端拆为核心 `rex` 与运维扩展 `rex-ops`：`rex` 直接复用现有 ~/.config/remote-exec/hosts.json，提供 exec/read/write/upload/download/smoke、hosts 探测和 readline 操作；`rex-ops` 承载 SSH 部署、升级和迁移。`rex.sh` 根据子命令在两个二进制之间路由，核心客户端不加载 SSH/SFTP 依赖。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -241,7 +241,7 @@
         },
         {
           "path": "rust/rex/src/main.rs",
-          "locator": "rex：remote-exec Rust 客户端（交互与一次性操作）"
+          "locator": "rex：remote-exec 核心客户端入口。"
         },
         {
           "path": "rust/rex/src/client.rs",
@@ -253,7 +253,7 @@
         },
         {
           "path": "rex.sh",
-          "locator": "全部子命令走 Rust 客户端（rust/rex）"
+          "locator": "核心命令走 rex，部署/升级/迁移走 rex-ops 扩展。"
         },
         {
           "path": "test/rust-prototype/phase3b.js",

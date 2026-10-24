@@ -65,7 +65,7 @@ build_local_x64() {
   export CC_x86_64_unknown_linux_musl=musl-gcc
   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
   (cd "$PROJECT_ROOT/rust" && cargo build --release --locked \
-    --target x86_64-unknown-linux-musl -p remote-exec-daemon -p remote-exec-rex)
+    --target x86_64-unknown-linux-musl -p remote-exec-daemon -p remote-exec-rex -p remote-exec-ops)
 }
 
 build_docker_arm64() {
@@ -75,7 +75,7 @@ build_docker_arm64() {
     -v remote-exec-cargo-registry:/home/rust/.cargo/registry \
     messense/rust-musl-cross:aarch64-musl \
     cargo build --release --locked --target aarch64-unknown-linux-musl \
-      -p remote-exec-daemon -p remote-exec-rex
+      -p remote-exec-daemon -p remote-exec-rex -p remote-exec-ops
 }
 
 # ---- 第三方许可证 ----
@@ -116,14 +116,23 @@ package_binary() { # $1: arch $2: target $3: 二进制名 $4: 包名
   mkdir -p "$stage/bin" "$stage/scripts" "$stage/packaging"
   install -m 0755 "$binary" "$stage/bin/$3"
   install -m 0644 "$PROJECT_ROOT/LICENSE" "$stage/LICENSE"
-  third_party "remote-exec-$([[ $3 == rex ]] && echo rex || echo daemon)" "$2" "$stage/THIRD_PARTY_LICENSES.txt"
+  local package_name
+  case "$3" in
+    remote-execd) package_name=daemon ;;
+    rex) package_name=rex ;;
+    rex-ops) package_name=ops ;;
+    *) printf '未知 Rust 产物：%s\n' "$3" >&2; exit 1 ;;
+  esac
+  third_party "remote-exec-$package_name" "$2" "$stage/THIRD_PARTY_LICENSES.txt"
 
   local archive_bytes
-  if [[ "$3" == rex ]]; then
-    node - "$stage/manifest.json" "$VERSION" "$2" "$1" "$COMPILER" <<'NODE'
+  if [[ "$3" == rex || "$3" == rex-ops ]]; then
+    local component
+    component=$([[ "$3" == rex-ops ]] && echo 'rex-ops' || echo 'rex')
+    node - "$stage/manifest.json" "$VERSION" "$2" "$1" "$COMPILER" "$component" <<'NODE'
 const fs = require('node:fs');
-const [out, version, target, arch, compiler] = process.argv.slice(2);
-fs.writeFileSync(out, JSON.stringify({ status: 'release', component: 'rex', version, target, arch, compiler }, null, 2) + '\n');
+const [out, version, target, arch, compiler, component] = process.argv.slice(2);
+fs.writeFileSync(out, JSON.stringify({ status: 'release', component, version, target, arch, compiler }, null, 2) + '\n');
 NODE
     archive_bytes="$(tar_and_hash "$stage" "$OUTPUT_DIR/$4.tar.gz")"
     printf 'rex 客户端包：%s（%s 字节，无体积门禁）\n' "$OUTPUT_DIR/$4.tar.gz" "$archive_bytes" >&2
@@ -136,7 +145,8 @@ const [out, version, target, arch, compiler] = process.argv.slice(2);
 fs.writeFileSync(out, JSON.stringify({
   status: 'release', component: 'daemon', version, target, arch, compiler,
   layout: { binary: 'bin/remote-execd', installer: 'scripts/install.sh', unit: 'packaging/remote-exec-supervisor.service' },
-  capabilities: ['exec', 'exec.stream', 'file.read', 'file.write', 'relay', 'upload', 'download', 'deploy.ssh'],
+  capabilities: ['exec', 'exec.stream', 'file.read', 'file.write', 'relay', 'upload', 'download', 'supervisor'],
+  extensions: ['rex-ops'],
 }, null, 2) + '\n');
 NODE
     archive_bytes="$(tar_and_hash "$stage" "$OUTPUT_DIR/$4.tar.gz")"
@@ -170,6 +180,7 @@ for arch in "${ARCHES[@]}"; do
   fi
   while read -r bytes binary; do RESULTS+=("$(printf '%s %s %s %s' "$arch" "$bytes" "$(basename "$binary")" "$(wc -c < "$binary")")"); done < <(package_binary "$arch" "$target" remote-execd "remote-exec-linux-$arch")
   while read -r bytes binary; do RESULTS+=("$(printf '%s %s %s %s' "$arch" "$bytes" "$(basename "$binary")" "$(wc -c < "$binary")")"); done < <(package_binary "$arch" "$target" rex "rex-linux-$arch")
+  while read -r bytes binary; do RESULTS+=("$(printf '%s %s %s %s' "$arch" "$bytes" "$(basename "$binary")" "$(wc -c < "$binary")")"); done < <(package_binary "$arch" "$target" rex-ops "rex-ops-linux-$arch")
 done
 
 node - "$OUTPUT_DIR/size.json" "$VERSION" "$LIMIT" "${RESULTS[@]}" <<'NODE'
@@ -177,10 +188,11 @@ const fs = require('node:fs');
 const [out, version, limit, ...results] = process.argv.slice(2);
 const incoming = results.map(line => {
   const [arch, archiveBytes, archive, binaryBytes] = line.split(' ');
-  const component = archive.startsWith('remote-exec') ? 'daemon' : 'rex';
+  const component = archive.startsWith('remote-exec-linux') ? 'daemon' :
+    (archive.startsWith('rex-ops') ? 'rex-ops' : 'rex');
   return {
     component, arch, archive, archiveBytes: Number(archiveBytes), binaryBytes: Number(binaryBytes),
-    sizeGatePassed: component === 'rex' || Number(archiveBytes) < Number(limit),
+    sizeGatePassed: component !== 'daemon' || Number(archiveBytes) < Number(limit),
   };
 });
 // 单架构运行只刷新该架构条目，保留其他架构的历史记录。

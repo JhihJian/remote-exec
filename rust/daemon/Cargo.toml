@@ -8,8 +8,12 @@ publish.workspace = true
 name = "remote-execd"
 path = "src/main.rs"
 
+[features]
+default = []
+ops = ["dep:remote-exec-ssh"]
+
 [dependencies]
-remote-exec-ssh = { path = "../ssh" }
+remote-exec-ssh = { path = "../ssh", optional = true }
 remote-exec-tls = { path = "../tls" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

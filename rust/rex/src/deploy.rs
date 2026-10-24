@@ -1,4 +1,4 @@
-//! rex deploy：SSH 部署（直连 russh 或 --via 网关 deploy.ssh RPC，语义对齐 src/deploy/cli.js）。
+//! rex-ops deploy：SSH 部署（直连 russh 或 --via 网关 deploy.ssh RPC）。
 use crate::bundle;
 use crate::config::{self, Credentials, Store};
 use crate::prompt;
@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::output;
 
-const HELP: &str = "用法: rex deploy [--via 网关名] [--port 8791] [--identity 私钥路径] [--package tar.gz] \
+const HELP: &str = "用法: rex-ops deploy [--via 网关名] [--port 8791] [--identity 私钥路径] [--package tar.gz] \
 [--ssh-port 22] [--host-key SHA256:...] [name=]user@IPv4 ...";
 
 /// 部署输出转录上限，超限整体丢弃只保留截断提示。

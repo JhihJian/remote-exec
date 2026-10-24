@@ -168,9 +168,9 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 
 ## 客户端
 
-### rex（Rust，默认入口）
+### rex（Rust 核心客户端）
 
-rex 是 Rust 实现的操作客户端，交互会话与一次性子命令与 Node 版一致，直接复用 `~/.config/remote-exec/hosts.json` 与既有凭据；deploy 与 upgrade 已由 rex 原生承接（russh 直连）。
+rex 是 Rust 实现的核心操作客户端，交互会话与一次性子命令直接复用 `~/.config/remote-exec/hosts.json` 与既有凭据。部署、升级和迁移由独立的 `rex-ops` 承接，避免核心客户端加载 SSH/SFTP 依赖。
 
 ```bash
 ./rex.sh                # 交互式会话（列出主机选择）
@@ -180,6 +180,16 @@ rex 是 Rust 实现的操作客户端，交互会话与一次性子命令与 Nod
 ./rex.sh read gateway /etc/hostname
 ./rex.sh upload gateway ./local.bin /remote/path.bin
 ```
+
+`rex` 核心客户端只包含远程执行、文件操作、relay 和大文件传输。部署、升级和迁移由独立的 `rex-ops` 运维扩展提供：
+
+```bash
+./rex.sh deploy root@192.168.1.101
+./rex.sh upgrade gateway --package remote-exec-linux-x64.tar.gz
+./rex.sh migrate gateway --package remote-exec-linux-x64.tar.gz
+```
+
+发布包分别提供 `rex-linux-*` 和 `rex-ops-linux-*`。核心客户端不依赖 SSH/SFTP 库；运维扩展只在执行部署、升级或迁移时加载这些能力。
 
 会话命令：
 
@@ -340,13 +350,13 @@ curl -fsSL https://github.com/JhihJian/remote-exec/releases/latest/download/inst
 在客户端执行，直连模式可省略 `--via`：
 
 ```bash
-rex deploy root@192.168.1.101
-rex deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.16.126.102
+rex-ops deploy root@192.168.1.101
+rex-ops deploy --via gateway --port 9000 app101=ops@172.16.126.101 app102=root@172.16.126.102
 ```
 
-仓库内可用 `./rex.sh deploy ...`，全局命令可通过 `npm install -g .` 安装。部署前确认 SSH 指纹，先尝试免密 SSH，按需无回显询问 SSH 和 sudo 密码。运行包通过 SSH 传入目标，目标无需访问公网。验收通过后自动保存各机凭据、登记直连或 `via` 配置，失败目标不会登记。
+仓库内可用 `./rex.sh deploy ...`，它会路由到 `rex-ops`；直接使用扩展时执行 `rex-ops deploy ...`。部署前确认 SSH 指纹，先尝试免密 SSH，按需无回显询问 SSH 和 sudo 密码。运行包通过 SSH 传入目标，目标无需访问公网。验收通过后自动保存各机凭据、登记直连或 `via` 配置，失败目标不会登记。
 
-`--port` 默认 8791，支持 `--ssh-port`、`--identity`、`--package` 和 `--host-key`。经网关部署需要网关运行当前版本的 `deploy.ssh` 接口，目标 daemon 端口应对网关内网可达。详见 [SSH 批量部署](docs/operations/SSH_DEPLOYMENT.md)。
+`--port` 默认 8791，支持 `--ssh-port`、`--identity`、`--package` 和 `--host-key`。经网关部署需要网关运行包含 `deploy.ssh` 扩展的 daemon，目标 daemon 端口应对网关内网可达；核心服务包默认不启用该网关部署接口。详见 [SSH 批量部署](docs/operations/SSH_DEPLOYMENT.md)。
 
 ### Rust 原型一行 SSH 安装
 

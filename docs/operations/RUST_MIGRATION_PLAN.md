@@ -35,9 +35,9 @@
 
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
-| rex deploy 直连 SSH 部署 | 完整（指纹校验、密码/密钥/agent 认证、sudo、验收、登记） | 缺失 | Phase 3b 在 rex 实现（russh） |
-| rex deploy 网关部署（deploy.ssh） | 完整（暂存上限与清理、网段校验、脱敏） | 缺失 | Phase 4：daemon RPC + rex 编排 |
-| 发布包下载（GitHub latest、断点续传、HTTPS-only） | 完整 | 缺失 | Phase 3b 纳入 rex |
+| rex-ops deploy 直连 SSH 部署 | 完整（指纹校验、密码/密钥/agent 认证、sudo、验收、登记） | 已从核心 rex 拆为独立 `remote-exec-ops` 扩展 | 运维扩展路径 |
+| rex-ops 网关部署（deploy.ssh） | 完整（暂存上限与清理、网段校验、脱敏） | 可选 daemon `ops` feature；核心服务包默认不启用 | 需要网关构建时启用 ops feature |
+| 发布包下载（GitHub latest、断点续传、HTTPS-only） | 完整 | `rex-ops` 扩展承载 | 运维扩展路径 |
 | 主机登记（hosts.json / ssh-hosts.json / credentials） | 完整 | 缺失 | rex 读写同一格式，天然兼容；须显式覆盖 servername/cwd/via 字段 |
 | 目标机一键安装 install.sh | 完整（--address/--port/--run-user/--source、flock、幂等、凭据保留、Ubuntu/Debian x64 矩阵） | 原型（无凭据保留、幂等、迁移、ARM64 OS 矩阵） | Phase 4 正式版 |
 
@@ -54,7 +54,7 @@
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
 | build-release + GitHub release | 完整（x64 Node 包，无体积门禁） | 原型构建（<2MB 门禁，x64+ARM64） | Phase 4 Rust 正式发布流程 |
-| 客户端分发 | rex.sh → node src/cli/main.js | rex.sh 全部子命令指向 rex 二进制 | tarball 分发在 Phase 5 收口 |
+| 客户端分发 | rex.sh → node src/cli/main.js | rex.sh 按命令路由到核心 `rex` 或扩展 `rex-ops` | Rust release 同时生成两个客户端包 |
 
 ### 2.6 生产机群事实（迁移对象盘点）
 
@@ -74,7 +74,8 @@
 Cargo workspace（Phase 0 决策细节）：
 
 - `remote-execd`（服务包，目标机）：单二进制，子命令 `daemon`（默认）、`supervisor`、`ctl`、`smoke`。musl 静态 x86_64 与 ARM64，压缩包 <2,000,000 字节门禁。
-- `rex`（客户端包，操作机）：单二进制，子命令默认交互模式、`deploy`、`upgrade`、`exec`、`hosts`。独立体积预算，musl 静态双架构。
+- `rex`（核心客户端包，操作机）：单二进制，提供默认交互模式、`exec`、文件操作、上传下载、relay 和 `hosts`。不加载 SSH/SFTP 与部署编排依赖。
+- `rex-ops`（运维扩展包，操作机）：独立二进制，提供 `deploy`、`upgrade`、`migrate`，通过共享的 rex 核心客户端和 SSH crate 调用核心协议与 supervisor 控制面。
 - 共享 crate：协议常量、hosts.json 解析、TLS/token 客户端逻辑（workspace 内复用，禁止复制粘贴）。
 
 Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，不依赖 Node remote-exec 代码。
@@ -93,11 +94,11 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 ### 3.3 升级模型
 
 - supervisor 是 systemd 常驻进程（root），重启后从 state 文件恢复 active generation（重新 spawn）。state 缺失或损坏时拒绝启动并报错（安全默认，SSH 修复），不以 current 链接猜测。
-- 升级通道：SSH root（与部署同信任级别）。`rex upgrade <host> --package <pkg>`：
+- 升级通道：SSH root（与部署同信任级别）。`rex-ops upgrade <host> --package <pkg>`：
   1. 上传包与校验和到目标机（SSH/SFTP 或既有 /upload 通道）
   2. SSH 执行 `remote-execd ctl upgrade --package <path>`：校验 SHA-256 → 解包到 versions/<id> → supervisor start 候选 → readyz 验证 → promote → 原子更新 state 与 current 链接 → 返回。**不在同一次调用内 retire**（ctl 自身经旧 generation 的连接会阻塞 retire 的连接归零条件）。
   3. rex 经新 generation 轮询 `ctl status`，待旧 generation 连接归零或到达窗口，再执行 `ctl retire <name>`。
-- 回滚：`remote-execd ctl rollback`（supervisor 重新走 promote+readyz）或 rex upgrade --rollback。
+- 回滚：`remote-execd ctl rollback`（supervisor 重新走 promote+readyz）或 `rex-ops upgrade --rollback`。
 - 候选失败（spawn 失败、readyz 失败、TLS 失败）：保持 active 不变，清理候选目录，ctl 返回错误。
 - test/upgrade/upgrade.js 的零中断门禁由 Phase 2 交付的 Rust 升级验收套件接替（loopback 全流程 + 实机），不遗留门禁真空。
 
@@ -144,19 +145,19 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 范围：hosts.json/ssh-hosts.json/credentials 兼容读写（含 servername/cwd/via）；exec/exec.stream/file.read/file.write/upload/download/relay；smoke 子命令暴露；readline 交互模式（:host/:cd/:timeout/:flow/:hosts/:q、二进制预览、退出摘要）；rex.sh 切换入口。
 退出条件：rex 对 Rust daemon 全操作路径可用；现有 ~/.config/remote-exec/hosts.json 直接可用；日常操作可用 rex dogfood。
 
-进度（2026-10-23）：`rust/rex`（bin rex）交付，依赖 tokio-rustls/tokio-tungstenite/reqwest(rustls)/rustyline，不入 daemon 2MB 门禁。loopback 套件 `test/rust-prototype/phase3a.js` 14 项通过（一次性 exec/read/write、30MB upload/download 哈希、relay 信封、smoke、hosts 并行探测、交互管道 PWD 跟随与退出摘要、Node config-store 互读）；Rust 单测 3 项（register 格式与 Node 互通、幂等/端点冲突、指纹 key 格式）。dogfood：xiaomi 旁挂 Rust daemon（0.0.0.0:8792，jhihjian，注册名 xiaomi-rust）实机验证 exec/smoke/read/write/upload/download/交互全套；现有 hosts.json 全部 14 台直接可用（Node 旧证书主机报 CaUsedAsEndEntity，属预期，Phase 5 迁移时换新证书）。双架构 musl 静态构建通过（x86_64 2,646,928 / ARM64 2,232,568 字节，无体积门禁）。rex deploy 仍由 rex.sh 路由到 Node（Phase 3b 移除）。
+进度（2026-10-23）：`rust/rex` 核心客户端与 `remote-exec-ops` 运维扩展已拆分。核心 rex 依赖 tokio-rustls/tokio-tungstenite/reqwest(rustls)/rustyline，不加载 SSH/SFTP；运维扩展单独加载 russh/russh-sftp。核心入口保留一次性 exec/read/write、upload/download、relay、smoke、hosts 和交互模式；部署、升级、迁移由 `rex-ops` 承接，`rex.sh` 根据子命令路由。已有协议与 supervisor 回归继续作为拆分后的核心验证依据。
 
 ### Phase 3b：rex 部署与升级 UX（已完成）
 范围：deploy 直连（russh：指纹、密码/密钥/agent、sudo、验收、登记、脱敏）；发布包下载（GitHub latest、断点续传、HTTPS-only）；upgrade 编排 UX（两段式 ctl 驱动）。
 退出条件：隔离环境直连部署测试通过；对试点主机完成一次真实 Rust↔Rust 无中断升级。
 
-进度（2026-10-23）：`rex deploy`/`rex upgrade` 交付（russh default-features=false + ring，仅 rex 依赖不入 daemon 2MB 门禁）。deploy：SSH 直连密钥/密码/agent 认证、指纹校验（known > --host-key > 交互确认）、sudo NOPASSWD/-S 路径、发布包本地/下载双源、验收（PinnedVerifier 钉住叶子证书，兼容自签与 CA 签发）、登记；upgrade：RawBundle sha256 校验、首装 bootstrap（解包 + 拉起 supervisor 单元 + 统一 ctl upgrade 建 generation）、两段式 retire、rollback 由 rex 同步 current 链接。隔离 E2E `test/rust-prototype/phase3b.js` 13 项通过（双容器 systemd/SSH：密钥/密码/错误密码/幂等/指纹拒绝/别名冲突/坏包/ops sudo/首装/零中断/回滚/坏包自动回滚）。实机验收（2026-10-23）：MACO → xiaomi docker privileged 容器（EasyTier 10.144.144.4，生产布局 CA+leaf+token+supervisor systemd 单元）完成 rex upgrade 首装 v1 → 持 WSS 连接零中断升级 v2（同连接持续可用）→ rollback 回 v1，全部通过后清理。发现并修复：CLI 选项在目标解析后统一合并（--port 任意顺序生效）、OpenSSH exit-status 在 EOF 后发送（channel 循环 Eof 不 break）、SFTP 需先 request_subsystem、ctl 输出多行 JSON 整体解析。rex.sh 不再路由 Node，deploy/upgrade 全部走 rex。Node 包自签叶子布局 rex 常规 CA 验证报 CaUsedAsEndEntity 属预期（deploy 验收用钉住验证），Phase 5 迁移统一换 CA+leaf。
+进度（2026-10-23）：部署、升级和迁移代码由 `rex-ops` 独立扩展承载，核心 rex 不再编译 SSH/SFTP 依赖。其流程语义和既有 phase3b/phase4b 回归资产保持不变；核心 daemon 默认不启用 `deploy.ssh`，网关部署需构建 daemon 的 `ops` feature。升级仍通过 supervisor 控制面完成候选验证、promote、排空、retire 和 rollback。
 
 ### Phase 4：daemon deploy.ssh 与发布流程
 范围：daemon deploy.ssh（russh、SFTP、暂存上限与清理、网段校验、脱敏）；rex 网关部署 E2E；正式构建脚本与发布流程（双架构）；正式 install.sh（参数面 --address/--port/--run-user/--source、flock、幂等、凭据保留、OS 矩阵 x64+ARM64）；Node→Rust 迁移脚本（3.4 流程）。
 退出条件：网关部署隔离测试通过；双架构离线安装测试通过；体积门禁复测并记录；试点实机完成一次 Node→Rust 迁移演练（含回滚演练）。
 
-进度（2026-10-23）：全部交付。`scripts/build-rust-release.sh`（双架构 musl、readelf 静态校验、确定性 tar、daemon 门禁严格小于 2MB、THIRD_PARTY_LICENSES、manifest）；体积门禁实测：daemon x64 1,852,145 / arm64 1,761,117 字节，rex x64 2,062,749 / arm64 1,966,229 字节。`rust/packaging/install.sh` 正式安装器（preflight OS 矩阵 Ubuntu 22.04/24.04+Debian 12 双架构+openEuler 22.03 aarch64、flock、curl 续传、幂等同版本重装、异版本拒绝、凭据保留、release.json 布局标记、Node 布局检测引导 rex migrate）；x64 docker privileged 隔离验收与 arm64 qemu binfmt（multiarch/qemu-user-static + debian12 镜像）离线安装验收均通过（supervisor 接管、ctl generation、CA 验收 exec）。`rex migrate`/`--rollback`：预检（Node install.json 布局、Rust 布局不存在、凭据在位、runUser 白名单）→并置安装（不影响运行中 Node）→单命令交接（失败自动恢复）→旧凭据验收；rollback 完整恢复 Node 并清理全部 Rust 资产后可重入迁移。隔离 E2E `test/rust-prototype/phase4b.js` 6 项通过；phase2/3a/3b/4a/runner/drain 回归全绿；ctl upgrade 对同 id 重放幂等（`.package-sha256` 标记）。实机演练（2026-10-23）：MACO → xiaomi（EasyTier 10.144.144.4，Debian 12 privileged 容器，Node install.sh 标准布局 8795）完成 rex migrate → rollback → 再 migrate → rex upgrade 零中断全链路，全程旧凭据可用，旧 generation 回收，演练后清理。兼容性备注：Node 布局仅 x64（捆绑 x86_64 node runtime），openEuler 实机无法首装 Node 布局，Phase 5 对裸 nohup/openEuler 机器用 rex deploy 直接装 Rust 正式布局（不需要 migrate，migrate 仅服务 install.json 标准布局）；upgrade 对迁移主机 backend-ca 自动兼容自签叶子（pin）与正式 CA。
+进度（2026-10-23）：全部交付。`scripts/build-rust-release.sh`（双架构 musl、readelf 静态校验、确定性 tar、daemon 门禁严格小于 2MB、THIRD_PARTY_LICENSES、manifest）；体积门禁实测：daemon x64 1,852,145 / arm64 1,761,117 字节，rex x64 2,062,749 / arm64 1,966,229 字节。`rust/packaging/install.sh` 正式安装器（preflight OS 矩阵 Ubuntu 22.04/24.04+Debian 12 双架构+openEuler 22.03 aarch64、flock、curl 续传、幂等同版本重装、异版本拒绝、凭据保留、release.json 布局标记、Node 布局检测引导 rex-ops migrate）；x64 docker privileged 隔离验收与 arm64 qemu binfmt（multiarch/qemu-user-static + debian12 镜像）离线安装验收均通过（supervisor 接管、ctl generation、CA 验收 exec）。`rex-ops migrate`/`--rollback`：预检（Node install.json 布局、Rust 布局不存在、凭据在位、runUser 白名单）→并置安装（不影响运行中 Node）→单命令交接（失败自动恢复）→旧凭据验收；rollback 完整恢复 Node 并清理全部 Rust 资产后可重入迁移。隔离 E2E `test/rust-prototype/phase4b.js` 6 项通过；phase2/3a/3b/4a/runner/drain 回归全绿；ctl upgrade 对同 id 重放幂等（`.package-sha256` 标记）。实机演练（2026-10-23）：MACO → xiaomi（EasyTier 10.144.144.4，Debian 12 privileged 容器，Node install.sh 标准布局 8795）完成 rex-ops migrate → rollback → 再 migrate → rex-ops upgrade 零中断全链路，全程旧凭据可用，旧 generation 回收，演练后清理。兼容性备注：Node 布局仅 x64（捆绑 x86_64 node runtime），openEuler 实机无法首装 Node 布局，Phase 5 对裸 nohup/openEuler 机器用 rex-ops deploy 直接装 Rust 正式布局（不需要 migrate，migrate 仅服务 install.json 标准布局）；upgrade 对迁移主机 backend-ca 自动兼容自签叶子（pin）与正式 CA。
 
 ### Phase 5：切换与退役
 范围：生产机群迁移（顺序：xiaomi → nm24/21/22/23 平移 → nm101/108/109 → QC71/101/194/195 → nm105 网关最后 → HG1）；文档/架构治理状态同步；Node 代码标记为回滚资产；发布流程切换到 Rust。

@@ -1,4 +1,4 @@
-//! rex migrate：把 Node 布局主机一次性迁移到 Rust supervisor 布局。
+//! rex-ops migrate：把 Node 布局主机一次性迁移到 Rust supervisor 布局。
 //!
 //! 流程：预检（Node 安装在位、Rust 布局未存在）→ 并置安装
 //! （versions 引导目录 + supervisor 单元，不影响运行中的 Node 服务）→
@@ -23,8 +23,8 @@ use crate::upgrade::{
 use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use std::time::Duration;
 
-const HELP: &str = "用法: rex migrate <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] \
-[--identity 私钥] [--host-key 指纹]\n       rex migrate <主机> --rollback [--ssh-user root] \
+const HELP: &str = "用法: rex-ops migrate <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] \
+[--identity 私钥] [--host-key 指纹]\n       rex-ops migrate <主机> --rollback [--ssh-user root] \
 [--ssh-port 22] [--identity 私钥] [--host-key 指纹]";
 
 /// Node 布局参数：install.json 中的端口与运行用户。
@@ -236,7 +236,7 @@ async fn drive_migrate(
         verify_with_existing_credentials(store, display, &layout.run_user).await?;
         output(&format!(
             "{display} 迁移完成：旧凭据（CA pin + token）验收通过\n\
-回滚：rex migrate {display} --rollback；Node 资产保留在 /opt/remote-exec（install.json 标记）\n"
+回滚：rex-ops migrate {display} --rollback；Node 资产保留在 /opt/remote-exec（install.json 标记）\n"
         ));
         Ok(0)
     }
@@ -325,7 +325,7 @@ echo 'Node 服务端口未就绪' >&2; exit 1",
     }
     verify_with_existing_credentials(store, display, &layout.run_user).await?;
     output(&format!(
-        "{display} 已回滚到 Node 服务（Rust 布局已清理）；可重新执行 rex migrate\n"
+        "{display} 已回滚到 Node 服务（Rust 布局已清理）；可重新执行 rex-ops migrate\n"
     ));
     Ok(0)
 }

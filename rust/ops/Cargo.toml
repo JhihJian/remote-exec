@@ -1,0 +1,13 @@
+[package]
+name = "remote-exec-ops"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rex-ops"
+path = "src/main.rs"
+
+[dependencies]
+remote-exec-rex = { path = "../rex", features = ["ops"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "signal", "time", "net", "io-util", "fs", "sync", "process"] }

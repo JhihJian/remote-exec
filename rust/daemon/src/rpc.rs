@@ -175,10 +175,11 @@ async fn dispatch(
         .get("method")
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::new(-32600, "请求需要 method 字段"))?;
-    if !matches!(
+    let supported = matches!(
         method,
-        "exec" | "exec.stream" | "file.read" | "file.write" | "relay" | "deploy.ssh"
-    ) {
+        "exec" | "exec.stream" | "file.read" | "file.write" | "relay"
+    ) || (cfg!(feature = "ops") && method == "deploy.ssh");
+    if !supported {
         return Err(RpcError::new(-32601, format!("未知方法: {method}")));
     }
     if !params.is_object() {
@@ -191,6 +192,7 @@ async fn dispatch(
         "file.read" => crate::files::read(params).await,
         "file.write" => crate::files::write(params).await,
         "relay" => crate::relay::request(params, id, out, cancel, relay_allow).await,
+        #[cfg(feature = "ops")]
         "deploy.ssh" => crate::deploy::run(params, id, out, cancel, relay_allow).await,
         _ => Err(RpcError::new(-32601, format!("未知方法: {method}"))),
     }

@@ -6,7 +6,7 @@
 #       /etc/remote-exec/credentials/{ca.crt,server.crt,server.key,token.sha256} +
 #       /etc/remote-exec/supervisor-state.json +
 #       /etc/systemd/system/remote-exec-supervisor.service。
-# 既有 Node 安装（/opt/remote-exec/install.json）请使用 rex migrate 迁移流程。
+# 既有 Node 安装（/opt/remote-exec/install.json）请使用 rex-ops migrate 迁移流程。
 
 fail() { printf '安装失败：%s\n' "$*" >&2; return 1; }
 
@@ -200,7 +200,7 @@ summary() {
   printf '服务地址：https://%s:%s（监听 0.0.0.0，supervisor）\n执行用户：%s\n' "$address" "$port" "$run_user"
   printf '开机自启：已启用\n客户端接入资料：/root/remote-exec-access.tar.gz\n'
   printf 'SSH 下载示例：scp root@%s:/root/remote-exec-access.tar.gz .\n' "$address"
-  printf '升级：rex upgrade（SSH root 通道，零中断）；回滚：rex upgrade --rollback\n'
+  printf '升级：rex-ops upgrade（SSH root 通道，零中断）；回滚：rex-ops upgrade --rollback\n'
   printf '查看日志：journalctl -u remote-exec-supervisor.service -n 30 --no-pager\n'
   openssl x509 -in /etc/remote-exec/credentials/server.crt -noout -enddate -ext subjectAltName
 }
@@ -237,10 +237,10 @@ main() {
   trap 'on_error "$?" "$LINENO"' ERR
   work_dir="$(mktemp -d)"
   if [[ -f /opt/remote-exec/install.json ]]; then
-    fail '检测到既有 Node 安装（/opt/remote-exec/install.json），请使用 rex migrate 迁移流程'
+    fail '检测到既有 Node 安装（/opt/remote-exec/install.json），请使用 rex-ops migrate 迁移流程'
   fi
   if [[ -d /opt/remote-exec/versions ]]; then
-    [[ -f /opt/remote-exec/release.json ]] || fail '已是 Rust 布局但缺少 release.json（可能是 rex migrate 迁移布局）；升级请使用 rex upgrade'
+    [[ -f /opt/remote-exec/release.json ]] || fail '已是 Rust 布局但缺少 release.json（可能是 rex-ops migrate 迁移布局）；升级请使用 rex-ops upgrade'
     installed=1
     local saved_port saved_user saved_address saved_version saved_hash
     saved_port="$(read_release_setting port)"; saved_user="$(read_release_setting runUser)"; saved_address="$(read_release_setting address)"
@@ -289,7 +289,7 @@ main() {
   version="$package_version"
   "$work_dir/package/bin/remote-execd" --help >/dev/null 2>&1 || fail '发布包二进制无法在本机执行'
   if (( installed )); then
-    [[ "$(read_release_setting version)" == "$version" ]] || fail "已安装其他版本（$(read_release_setting version)），请使用 rex upgrade"
+    [[ "$(read_release_setting version)" == "$version" ]] || fail "已安装其他版本（$(read_release_setting version)），请使用 rex-ops upgrade"
     [[ "$(read_release_setting packageSha256)" == "$package_hash" ]] || fail '同版本发布包发生变化，请核查发布源'
   fi
   if [[ -z "$address" ]]; then
@@ -313,7 +313,7 @@ main() {
   prepare_credentials
   if (( installed == 0 )); then
     # 首装引导：解包 bootstrap generation 使 ctl 二进制可用，正式 generation
-    # 统一由 ctl upgrade 创建（与 rex upgrade 首装路径一致）。
+    # 统一由 ctl upgrade 创建（与 rex-ops upgrade 首装路径一致）。
     install -d -m 0755 -o root -g root /opt
     local generation
     generation="bootstrap-$(date +%s)-${package_hash:0:8}"

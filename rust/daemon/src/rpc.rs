@@ -52,6 +52,7 @@ pub async fn session<S>(
     ws: WebSocketStream<S>,
     relay_allow: Vec<String>,
     lifecycle: std::sync::Arc<crate::lifecycle::Lifecycle>,
+    task_manager: std::sync::Arc<crate::tasks::TaskManager>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -141,7 +142,7 @@ pub async fn session<S>(
             biased;
             _ = cancelled(&mut cancel) => break,
             _ = force.changed() => break,
-            result = dispatch(&request, &params, &id, &out, &mut request_cancel, &relay_allow) => result,
+            result = dispatch(&request, &params, &id, &out, &mut request_cancel, &relay_allow, &task_manager, &lifecycle) => result,
         };
         let response = match result {
             Ok(result) => json!({"id": id, "result": result}),
@@ -163,6 +164,7 @@ fn error_response(id: &Value, error: &RpcError) -> Value {
     json!({"id": id, "error": body})
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     request: &Value,
     params: &Value,
@@ -170,6 +172,8 @@ async fn dispatch(
     out: &mpsc::Sender<Message>,
     cancel: &mut watch::Receiver<bool>,
     relay_allow: &[String],
+    task_manager: &std::sync::Arc<crate::tasks::TaskManager>,
+    lifecycle: &std::sync::Arc<crate::lifecycle::Lifecycle>,
 ) -> Result<Value, RpcError> {
     let method = request
         .get("method")
@@ -177,7 +181,16 @@ async fn dispatch(
         .ok_or_else(|| RpcError::new(-32600, "请求需要 method 字段"))?;
     let supported = matches!(
         method,
-        "exec" | "exec.stream" | "file.read" | "file.write" | "relay"
+        "exec"
+            | "exec.stream"
+            | "exec.start"
+            | "exec.status"
+            | "exec.log"
+            | "exec.cancel"
+            | "exec.forget"
+            | "file.read"
+            | "file.write"
+            | "relay"
     ) || (cfg!(feature = "ops") && method == "deploy.ssh");
     if !supported {
         return Err(RpcError::new(-32601, format!("未知方法: {method}")));
@@ -189,6 +202,11 @@ async fn dispatch(
         "exec" | "exec.stream" => {
             crate::exec::run(params, method == "exec.stream", id, out, cancel).await
         }
+        "exec.start" => crate::exec::start_task(params, task_manager, lifecycle).await,
+        "exec.status" => crate::exec::task_status(params, task_manager),
+        "exec.log" => crate::exec::task_log(params, task_manager),
+        "exec.cancel" => crate::exec::cancel_task(params, task_manager),
+        "exec.forget" => crate::exec::forget_task(params, task_manager),
         "file.read" => crate::files::read(params).await,
         "file.write" => crate::files::write(params).await,
         "relay" => crate::relay::request(params, id, out, cancel, relay_allow).await,

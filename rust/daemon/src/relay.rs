@@ -20,6 +20,7 @@ use tokio_tungstenite::{
 const CONNECT_BUDGET: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: u64 = 5 * 60 * 1000;
 const MAX_INNER_TIMEOUT: u64 = 10 * 60 * 1000;
+const MAX_TASK_TIMEOUT: u64 = 24 * 60 * 60 * 1000;
 const MAX_TOTAL_TIMEOUT: u64 = 15 * 60 * 1000;
 const RELAY_SLACK: u64 = 15 * 1000;
 const MAX_CONCURRENT: usize = 8;
@@ -202,18 +203,34 @@ async fn run(call: RelayCall<'_>) -> Result<Value, RpcError> {
         .get("method")
         .and_then(Value::as_str)
         .ok_or_else(|| error(-32015, "request.method 必须存在", "validate"))?;
-    if !matches!(method, "exec" | "exec.stream" | "file.read" | "file.write") {
+    if !matches!(
+        method,
+        "exec"
+            | "exec.stream"
+            | "exec.start"
+            | "exec.status"
+            | "exec.log"
+            | "exec.cancel"
+            | "exec.forget"
+            | "file.read"
+            | "file.write"
+    ) {
         return Err(error(
             -32015,
-            "relay 仅支持 exec/exec.stream/file.read/file.write，禁止嵌套 relay",
+            "relay 仅支持 exec/exec.stream/exec.start/exec.status/exec.log/exec.cancel/exec.forget/file.read/file.write，禁止嵌套 relay",
             "validate",
         ));
     }
     let mut inner_params = params_object(request.get("params"))?;
     // 仅当调用方显式提供 timeoutMs 时才改写内层超时，并限制在上限内。
+    let inner_limit = if method == "exec.start" {
+        MAX_TASK_TIMEOUT
+    } else {
+        MAX_INNER_TIMEOUT
+    };
     let inner_budget = match inner_params.get("timeoutMs") {
         Some(value) => {
-            let clamped = value.as_u64().unwrap_or(1).clamp(1, MAX_INNER_TIMEOUT);
+            let clamped = value.as_u64().unwrap_or(1).clamp(1, inner_limit);
             inner_params["timeoutMs"] = Value::from(clamped);
             clamped
         }

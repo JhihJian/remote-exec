@@ -195,32 +195,67 @@ pub async fn run(
     }
     if reason != "exited" {
         group.terminate();
-    } else if status.is_some() {
-        group.disarm();
     }
     if status.is_none() {
         status = Some(child.wait().await?);
     }
+    let mut drain_timed_out = false;
     if streaming {
-        drain_stream_remaining(&mut stdout, "stdout", id, out, &mut counts[0]).await?;
-        drain_stream_remaining(&mut stderr, "stderr", id, out, &mut counts[1]).await?;
+        match tokio::time::timeout(
+            Duration::from_millis(500),
+            drain_stream_remaining(&mut stdout, "stdout", id, out, &mut counts[0]),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => drain_timed_out = true,
+        }
+        match tokio::time::timeout(
+            Duration::from_millis(500),
+            drain_stream_remaining(&mut stderr, "stderr", id, out, &mut counts[1]),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => drain_timed_out = true,
+        }
     } else {
-        drain_remaining(
-            &mut stdout,
-            &mut buffers[0],
-            &mut counts[0],
-            cap,
-            &mut truncated,
+        match tokio::time::timeout(
+            Duration::from_millis(500),
+            drain_remaining(
+                &mut stdout,
+                &mut buffers[0],
+                &mut counts[0],
+                cap,
+                &mut truncated,
+            ),
         )
-        .await?;
-        drain_remaining(
-            &mut stderr,
-            &mut buffers[1],
-            &mut counts[1],
-            cap,
-            &mut truncated,
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => drain_timed_out = true,
+        }
+        match tokio::time::timeout(
+            Duration::from_millis(500),
+            drain_remaining(
+                &mut stderr,
+                &mut buffers[1],
+                &mut counts[1],
+                cap,
+                &mut truncated,
+            ),
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => drain_timed_out = true,
+        }
+    }
+    if drain_timed_out {
+        truncated = true;
+        group.terminate();
+    } else {
+        group.disarm();
     }
     drop(group);
     let code = match reason {
@@ -234,7 +269,73 @@ pub async fn run(
         )
     } else {
         Ok(
-            json!({"exitCode": code, "stdoutB64": STANDARD.encode(&buffers[0]), "stderrB64": STANDARD.encode(&buffers[1]), "truncated": truncated}),
+            json!({"exitCode": code, "reason": reason, "stdoutB64": STANDARD.encode(&buffers[0]), "stderrB64": STANDARD.encode(&buffers[1]), "truncated": truncated}),
         )
     }
+}
+
+fn task_id(params: &Value) -> Result<String, RpcError> {
+    params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value.chars().all(|c| c.is_ascii_graphic() && c != '"')
+        })
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| RpcError::invalid("taskId 必须是 1 至 128 个可打印 ASCII 字符"))
+}
+
+pub async fn start_task(
+    params: &Value,
+    manager: &std::sync::Arc<crate::tasks::TaskManager>,
+    lifecycle: &std::sync::Arc<crate::lifecycle::Lifecycle>,
+) -> Result<Value, RpcError> {
+    let id = task_id(params)?;
+    params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty() && !s.contains('\0'))
+        .ok_or_else(|| RpcError::invalid("params.command 必须是非空字符串"))?;
+    let _ = positive(params, "timeoutMs", 300_000)?;
+    let _ = positive(params, "outputBytesCap", 1024 * 1024)?;
+    manager.start(id, params.clone(), lifecycle)
+}
+
+fn task_param(params: &Value) -> Result<String, RpcError> {
+    params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| RpcError::invalid("taskId 必须是非空字符串"))
+}
+
+pub fn task_status(
+    params: &Value,
+    manager: &std::sync::Arc<crate::tasks::TaskManager>,
+) -> Result<Value, RpcError> {
+    manager.status(&task_param(params)?)
+}
+
+pub fn task_log(
+    params: &Value,
+    manager: &std::sync::Arc<crate::tasks::TaskManager>,
+) -> Result<Value, RpcError> {
+    manager.log(&task_param(params)?)
+}
+
+pub fn cancel_task(
+    params: &Value,
+    manager: &std::sync::Arc<crate::tasks::TaskManager>,
+) -> Result<Value, RpcError> {
+    manager.cancel(&task_param(params)?)
+}
+
+pub fn forget_task(
+    params: &Value,
+    manager: &std::sync::Arc<crate::tasks::TaskManager>,
+) -> Result<Value, RpcError> {
+    manager.forget(&task_param(params)?)
 }

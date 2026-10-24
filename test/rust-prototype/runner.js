@@ -185,6 +185,17 @@ async function main() {
       assert.equal(Buffer.from(r.stdoutB64, "base64").length, 1024);
       assert.equal(Buffer.from(r.stderrB64, "base64").length, 1024);
     });
+    await test("后台进程持有输出管道时仍返回最终状态并清理进程组", async () => {
+      const pidfile = path.join(tmp, "orphan-pid");
+      const started = Date.now();
+      const r = await c.call("exec", {
+        command: `sleep 60 & echo $! > ${shellQuote(pidfile)}`,
+        timeoutMs: 5000,
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(Date.now() - started < 3000);
+      await eventually(() => !running(Number(fs.readFileSync(pidfile, "utf8"))));
+    });
     await test("同连接请求按顺序执行", async () => {
       const marker = path.join(tmp, "sequence");
       const first = c.call("exec", { command: `sleep 0.2; printf first > ${shellQuote(marker)}` });
@@ -222,6 +233,48 @@ async function main() {
       other.abort(); await rejected;
       await eventually(() => !running(Number(fs.readFileSync(pidfile, "utf8"))));
     });
+    await test("独立任务在连接断开后继续并可查询最终结果", async () => {
+      const taskClient = await client();
+      const taskId = `durable-${crypto.randomBytes(8).toString("hex")}`;
+      const started = await taskClient.call("exec.start", {
+        taskId,
+        command: "sleep 0.4; printf durable-output",
+        timeoutMs: 5000,
+      });
+      assert.equal(started.taskId, taskId);
+      taskClient.abort();
+      let state;
+      await eventually(async () => {
+        state = await c.call("exec.status", { taskId });
+        return state.status === "completed";
+      });
+      assert.equal(state.status, "completed");
+      assert.equal(state.result.exitCode, 0);
+      assert.equal(Buffer.from(state.result.stdoutB64, "base64").toString(), "durable-output");
+      const log = await c.call("exec.log", { taskId });
+      assert.equal(Buffer.from(log.stdoutB64, "base64").toString(), "durable-output");
+      const replay = await c.call("exec.start", {
+        taskId,
+        command: "sleep 0.4; printf durable-output",
+        timeoutMs: 5000,
+      });
+      assert.deepEqual(replay, state);
+      assert.deepEqual(await c.call("exec.forget", { taskId }), { taskId, forgotten: true });
+      await assert.rejects(c.call("exec.status", { taskId }), /-32040/);
+    });
+    await test("独立任务失败状态和显式取消可查询", async () => {
+      const taskId = `cancel-${crypto.randomBytes(8).toString("hex")}`;
+      await c.call("exec.start", { taskId, command: "sleep 60", timeoutMs: 5000 });
+      const cancelling = await c.call("exec.cancel", { taskId });
+      assert.equal(cancelling.taskId, taskId);
+      let state;
+      await eventually(async () => {
+        state = await c.call("exec.status", { taskId });
+        return state.status === "failed";
+      });
+      assert.equal(state.result.exitCode, 130);
+      assert.equal(state.result.reason, "cancelled");
+    });
     await test("二进制文件 RPC 往返与参数拒绝", async () => {
       const file = path.join(tmp, "nested", "binary");
       const bytes = crypto.randomBytes(8192);
@@ -237,6 +290,23 @@ async function main() {
       const target = { host: "127.0.0.1", port: Number(targetMatch[1]) };
       const auth = { token: targetToken, ca: fs.readFileSync(targetCa, "utf8") };
       const base = { target, auth };
+      const durableTaskId = `relay-durable-${crypto.randomBytes(8).toString("hex")}`;
+      let durable = await c.call("relay", {
+        ...base,
+        request: {
+          method: "exec.start",
+          params: { taskId: durableTaskId, command: "sleep 0.2; printf relay-durable", timeoutMs: 5000 },
+        },
+      });
+      assert.equal(durable.result.taskId, durableTaskId);
+      await eventually(async () => {
+        durable = await c.call("relay", {
+          ...base,
+          request: { method: "exec.status", params: { taskId: durableTaskId } },
+        });
+        return durable.result.status === "completed";
+      });
+      assert.equal(Buffer.from(durable.result.result.stdoutB64, "base64").toString(), "relay-durable");
       let r = await c.call("relay", { ...base, request: { method: "exec", params: { command: "printf relay-rust" } } });
       assert.equal(r.relayed, true);
       assert.equal(r.error, null);

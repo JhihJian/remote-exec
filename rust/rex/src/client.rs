@@ -248,6 +248,82 @@ pub async fn call_host(
     Ok(final_value.get("result").cloned().unwrap_or(Value::Null))
 }
 
+/// 独立任务调用：提交和查询使用同一个 taskId，连接断开时只重试 RPC，不取消远端进程。
+pub async fn call_task_host(
+    store: &crate::config::Store,
+    host_name: &str,
+    call: &Call,
+    interrupt: &mut Interrupt,
+) -> Result<Value, String> {
+    let task_id = format!("{:032x}", rand::random::<u128>());
+    let timeout_ms = call
+        .params
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(300_000);
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_millis(timeout_ms.saturating_add(30_000)))
+        .ok_or_else(|| "任务超时时间溢出".to_string())?;
+    let mut start_params = call.params.clone();
+    start_params
+        .as_object_mut()
+        .ok_or_else(|| "独立任务参数必须是对象".to_string())?
+        .insert("taskId".into(), Value::String(task_id.clone()));
+    let mut started = false;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("任务状态无法确认，taskId={task_id}"));
+        }
+        let request = Call {
+            method: if started { "exec.status" } else { "exec.start" }.into(),
+            params: if started {
+                json!({"taskId": task_id})
+            } else {
+                start_params.clone()
+            },
+        };
+        let rpc = call_host(store, host_name, &request, None, interrupt);
+        match tokio::time::timeout(Duration::from_secs(30), rpc).await {
+            Ok(Ok(state)) => {
+                started = true;
+                match state.get("status").and_then(Value::as_str) {
+                    Some("completed") | Some("failed") => {
+                        if let Some(error) = state.get("error") {
+                            return Err(format!(
+                                "任务失败 rpc {}: {}",
+                                error.get("code").and_then(Value::as_i64).unwrap_or(0),
+                                error.get("message").and_then(Value::as_str).unwrap_or("")
+                            ));
+                        }
+                        let result = state.get("result").cloned().unwrap_or(Value::Null);
+                        let mut cleanup_interrupt = Interrupt(None);
+                        let _ = call_host(
+                            store,
+                            host_name,
+                            &Call {
+                                method: "exec.forget".into(),
+                                params: json!({"taskId": task_id}),
+                            },
+                            None,
+                            &mut cleanup_interrupt,
+                        )
+                        .await;
+                        return Ok(result);
+                    }
+                    Some("running") => {}
+                    _ => return Err(format!("任务返回了未知状态: {state}")),
+                }
+            }
+            Ok(Err(error))
+                if !error.starts_with("rpc ") && std::time::Instant::now() < deadline => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) if std::time::Instant::now() < deadline => {}
+            Err(_) => return Err(format!("任务 RPC 等待超时，taskId={task_id}")),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 fn ca_pem_gateway(entry: &HostEntry) -> Result<String, String> {
     std::fs::read_to_string(&entry.ca).map_err(|e| format!("读取 CA 失败 {}: {e}", entry.ca))
 }

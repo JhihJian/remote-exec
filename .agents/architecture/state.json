@@ -40,7 +40,7 @@
     },
     {
       "id": "rpc-operation-boundary",
-      "conclusion": "RPC 服务器默认暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类核心方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。",
+      "conclusion": "RPC 服务器默认暴露 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read`、`file.write` 和 `relay`。每个 WebSocket 会话顺序执行请求，连接关闭时取消连接绑定操作；独立任务由 daemon 任务管理器持有，连接关闭后继续执行并可按 `taskId` 查询。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -63,7 +63,7 @@
     },
     {
       "id": "command-execution-semantics",
-      "conclusion": "命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。",
+      "conclusion": "命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。独立任务以客户端提供的 `taskId` 去重，连接异常时调用方重试提交或查询，最终状态明确区分 `completed` 和 `failed`；任务结果仅保留在当前 daemon 生命周期内。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -116,7 +116,7 @@
     },
     {
       "id": "relay-security-boundary",
-      "conclusion": "relay 只接受 IPv4 字面量和白名单内目标，只转发 `exec`、`exec.stream`、`file.read` 和 `file.write`，禁止嵌套 relay。网关在连接目标时校验证书，并将目标认证失败、证书失败和不可达状态区分为不同 RPC 错误。",
+      "conclusion": "relay 只接受 IPv4 字面量和白名单内目标，只转发 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read` 和 `file.write`，禁止嵌套 relay。网关在连接目标时校验证书，并将目标认证失败、证书失败和不可达状态区分为不同 RPC 错误。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -201,7 +201,7 @@
         },
         {
           "path": "rust/daemon/src/relay.rs",
-          "locator": "relay 仅支持 exec/exec.stream/file.read/file.write，禁止嵌套 relay"
+          "locator": "relay 仅支持 exec/exec.stream/exec.start/exec.status/exec.log/exec.cancel/exec.forget/file.read/file.write，禁止嵌套 relay"
         },
         {
           "path": "rust/daemon/src/supervisor.rs",

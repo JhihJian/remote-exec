@@ -150,6 +150,11 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 | --- | --- | --- |
 | `exec` | `command`、可选 `cwd`、`timeoutMs`、`outputBytesCap` | 退出码、Base64 编码的 stdout/stderr、截断标记 |
 | `exec.stream` | `command`、可选 `cwd`、`timeoutMs` | 多个 output 事件，最后返回退出码和字节数 |
+| `exec.start` | `taskId`、`command`、可选 `cwd`、`timeoutMs`、`outputBytesCap` | 创建独立任务并返回任务状态，连接关闭后任务继续 |
+| `exec.status` | `taskId` | 查询任务状态和完成后的最终结果 |
+| `exec.log` | `taskId` | 查询任务完成结果中的 stdout/stderr 日志 |
+| `exec.cancel` | `taskId` | 显式取消独立任务，最终结果为退出码 130 |
+| `exec.forget` | `taskId` | 清理已结束任务，释放任务表容量 |
 | `file.read` | 绝对路径 `file` | Base64 编码的文件内容，单次读取上限 64MB |
 | `file.write` | 绝对路径 `file`、Base64 编码的 `contentB64` | 写入字节数 |
 | `deploy.ssh` | SSH 指纹检查、暂存准备、SSH 安装和清理 | 经认证的网关部署结果与接入凭据 |
@@ -159,7 +164,11 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 
 - 文件和命令输出使用 Base64，保证二进制内容可传输。
 - `exec` 默认超时 5 分钟，默认每个输出流最多收集 1MB。
-- 超时退出码为 `124`；客户端断连时，服务端会终止对应进程组。
+- `exec` 和 `exec.stream` 是连接绑定调用，连接断开会终止对应进程组；它们适合需要实时响应或明确取消语义的短调用。
+- `exec.start` 是连接无关调用。调用方必须生成唯一 `taskId`，服务端在 daemon 生命周期内保存最多 256 个任务；断线后使用同一 `taskId` 重试 `exec.start` 或查询 `exec.status`，不会重复启动命令。已结束任务可用 `exec.forget` 清理，运行中的任务不能清理。
+- 独立任务的 `timeoutMs` 只限制远端命令执行时间，不限制后续状态查询。任务最终状态为 `completed` 或 `failed`，结果中的 `exitCode`、`reason`、stdout/stderr 和 `truncated` 必须一起验收；连接异常且无法查询最终状态时不能把部分输出当作成功。
+- `exec.log` 在任务完成后返回已收集的 stdout/stderr；任务运行中暂不提供增量日志。
+- 超时退出码为 `124`。
 - `exec.stream` 以 16KB 分片发送输出，发送停滞 30 秒后终止命令。
 - WebSocket 单帧上限为 64MB。
 - HTTP `/upload` 和 `/download` 只支持直连 daemon，不经 relay 转发。
@@ -250,7 +259,7 @@ node src/tui/app.js gateway
 
 每个工具都定义了 `renderCall`，Pi TUI 会直接显示调用的主机与命令（如 `remote_bash [nm105] $ ls -la`），而不是只显示工具名。
 
-`remote_bash` 执行期间每秒刷新“执行中 · 已用时 3.0s”，结束后显示最终“耗时 3.2s”。耗时从插件开始执行工具到收到结果计量，包含连接、网关转发和远程执行等待。取消工具调用时会同时中断 WebSocket 和远端进程组。每次调用独立计时，最终耗时保存在工具结果中，重新打开会话仍可显示。输出默认显示前 10 行，展开后查看完整内容。
+`remote_bash` 使用独立任务协议提交命令，并按 `taskId` 查询最终状态；普通网络断开会重连查询，不会取消远端进程。执行期间每秒刷新“执行中 · 已用时 3.0s”，结束后显示最终“耗时 3.2s”。耗时从插件开始执行工具到确认最终结果计量，包含连接、网关转发、远程执行和重连等待。用户取消工具调用时会发送 `exec.cancel`，并以明确的取消结果结束。每次调用独立计时，最终耗时保存在工具结果中，重新打开会话仍可显示。输出默认显示前 10 行，展开后查看完整内容。
 
 注册 extension：
 
@@ -291,7 +300,7 @@ relay 的默认约束：
 
 - 目标地址只接受 IPv4 字面量，默认允许回环和 RFC1918 私网网段。
 - 可通过重复传入 `--relay-allow <cidr>` 自定义允许网段。
-- 内层只允许 `exec`、`exec.stream`、`file.read` 和 `file.write`。
+- 内层只允许 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read` 和 `file.write`。
 - 目标 token 和 CA 随请求传递，网关不落盘。
 - 单网关 relay 并发上限为 8，连接预算和内层超时均有上限。
 - `via` 只支持一层，上传和下载需要直连目标主机。

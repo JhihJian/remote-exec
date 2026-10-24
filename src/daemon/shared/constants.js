@@ -15,5 +15,6 @@ module.exports = {
   RELAY_MAX_INNER_TIMEOUT_MS: 10 * 60 * 1000,
   RELAY_MAX_TOTAL_TIMEOUT_MS: 15 * 60 * 1000,
   DEFAULT_RELAY_ALLOW: ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
-  RELAY_INNER_METHODS: new Set(["exec", "exec.stream", "file.read", "file.write"]),
+  RELAY_INNER_METHODS: new Set(["exec", "exec.stream", "exec.start", "exec.status", "exec.log", "exec.cancel", "exec.forget", "file.read", "file.write"]),
+  RELAY_MAX_TASK_TIMEOUT_MS: 24 * 60 * 60 * 1000,
 };

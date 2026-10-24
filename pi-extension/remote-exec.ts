@@ -121,8 +121,11 @@ class WssClient {
 			}, CONNECT_TIMEOUT_MS);
 			socket.on("error", (err) => {
 				clearTimeout(timer);
-				reject(err);
+				if (!this.upgraded) reject(err);
+				this.failPending(err);
 			});
+			socket.on("end", () => this.failPending(new Error("远程连接已关闭")));
+			socket.on("close", () => this.failPending(new Error("远程连接已关闭")));
 			socket.on("secureConnect", () => {
 				socket.write(
 					`GET / HTTP/1.1\r\nHost: ${this.opts.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
@@ -191,6 +194,7 @@ class WssClient {
 				continue;
 			}
 			if (opcode === 0x8) {
+				this.failPending(new Error("远程连接已关闭"));
 				this.socket?.end();
 				return;
 			}
@@ -228,6 +232,11 @@ class WssClient {
 		else p.resolve(msg.result);
 	}
 
+	private failPending(error: Error): void {
+		this.pending.forEach(({ reject }) => reject(error));
+		this.pending.clear();
+	}
+
 	call<T>(method: string, params: Record<string, unknown>): Promise<T> {
 		const id = this.nextId++;
 		return new Promise<T>((resolve, reject) => {
@@ -237,9 +246,7 @@ class WssClient {
 	}
 
 	abort(): void {
-		const error = new Error("连接已中断");
-		this.pending.forEach(({ reject }) => reject(error));
-		this.pending.clear();
+		this.failPending(new Error("连接已中断"));
 		this.socket?.destroy();
 	}
 
@@ -307,6 +314,99 @@ async function callHost<T>(
 		return envelope.result as T;
 	} finally {
 		client.close();
+	}
+}
+
+interface RemoteTaskState {
+	taskId: string;
+	status: "running" | "completed" | "failed";
+	result?: WssCallResult;
+	error?: { code: number; message: string };
+}
+
+function isTransportFailure(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return !message.startsWith("rpc ") && !message.includes("目标返回错误 rpc ");
+}
+
+function waitForTaskRetry(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callTaskRpc<T>(
+	host: string,
+	method: string,
+	params: Record<string, unknown>,
+	setAbort: (abort: () => void) => void,
+): Promise<T> {
+	let abort = () => {};
+	const request = callHost<T>(host, method, params, (current) => {
+		abort = current;
+		setAbort(current);
+	});
+	let timer: ReturnType<typeof setTimeout>;
+	try {
+		return await Promise.race([
+			request,
+			new Promise<T>((_, reject) => {
+				timer = setTimeout(() => {
+					abort();
+					reject(new Error("任务 RPC 等待超时"));
+				}, 30_000);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer!);
+	}
+}
+
+/** 独立任务调用：连接只负责提交和查询，断线不会取消远端进程。 */
+async function callRemoteTask(
+	host: string,
+	params: Record<string, unknown>,
+	timeoutMs: number | undefined,
+	signal?: AbortSignal,
+): Promise<WssCallResult> {
+	const taskId = crypto.randomBytes(16).toString("hex");
+	const budget = Math.max(1, timeoutMs || 300_000) + 30_000;
+	const deadline = Date.now() + budget;
+	let currentAbort = () => {};
+	const abort = () => currentAbort();
+	signal?.addEventListener("abort", abort, { once: true });
+	let started = false;
+	try {
+		for (;;) {
+			if (signal?.aborted) throw new Error("已中断");
+			if (Date.now() >= deadline) throw new Error(`任务状态无法确认，taskId=${taskId}`);
+			try {
+				const state = await callTaskRpc<RemoteTaskState>(
+					host,
+					started ? "exec.status" : "exec.start",
+					started ? { taskId } : { ...params, taskId },
+					(abortCurrent) => { currentAbort = abortCurrent; },
+				);
+				started = true;
+				if (state.status === "completed" || state.status === "failed") {
+					if (state.error) throw new Error(`任务失败 rpc ${state.error.code}: ${state.error.message}`);
+					if (!state.result) throw new Error(`任务 ${taskId} 已结束但没有最终结果`);
+					const result = state.result;
+					try { await callHost(host, "exec.forget", { taskId }); } catch { /* 结果已确认，清理失败可由服务端容量保护处理 */ }
+					return result;
+				}
+			} catch (error) {
+				if (!isTransportFailure(error) || Date.now() >= deadline) throw error;
+				await waitForTaskRetry(1000);
+				continue;
+			}
+			await waitForTaskRetry(1000);
+		}
+	} catch (error) {
+		if (signal?.aborted) {
+			try { await callHost(host, "exec.cancel", { taskId }); } catch { /* 断线时无法确认取消 */ }
+		}
+		throw error;
+	} finally {
+		signal?.removeEventListener("abort", abort);
 	}
 }
 
@@ -446,20 +546,13 @@ function unknownHostResult(err: unknown): string {
 }
 
 async function remoteBash(host: string, command: string, cwd?: string, timeoutMs?: number, signal?: AbortSignal): Promise<string> {
-	let removeAbortListener = () => {};
 	try {
 		if (signal?.aborted) return "远程执行失败：连接已中断";
-		const r = await callHost<WssCallResult>(host, "exec", {
+		const r = await callRemoteTask(host, {
 			command,
 			cwd: cwd || undefined,
 			timeoutMs: timeoutMs || undefined,
-		}, (abort) => {
-			if (signal?.aborted) abort();
-			else {
-				signal?.addEventListener("abort", abort, { once: true });
-				removeAbortListener = () => signal?.removeEventListener("abort", abort);
-			}
-		});
+		}, timeoutMs, signal);
 		const stdout = Buffer.from(r.stdoutB64, "base64").toString("utf8");
 		const stderr = Buffer.from(r.stderrB64, "base64").toString("utf8");
 		const parts = [`[exit ${r.exitCode}]`];
@@ -469,8 +562,6 @@ async function remoteBash(host: string, command: string, cwd?: string, timeoutMs
 		return parts.join("\n");
 	} catch (err) {
 		return unknownHostResult(err);
-	} finally {
-		removeAbortListener();
 	}
 }
 

@@ -55,6 +55,7 @@ flowchart TB
         rserver["server.rs<br/>HTTP 文件流 · WSS 升级"]
         rrpc["rpc.rs<br/>会话 · 请求顺序 · 取消"]
         rexec["exec.rs<br/>Bash 进程组 · 输出"]
+        rtasks["tasks.rs<br/>独立任务 · 状态 · 结果"]
         rfiles["files.rs<br/>文件 RPC · 原子替换"]
         rauth["auth.rs<br/>token 哈希验证"]
         rmain -->|创建 TLS 连接并委托服务| rserver
@@ -62,6 +63,8 @@ flowchart TB
         rserver -->|上传临时文件与下载读取| rfiles
         rserver -->|入口鉴权| rauth
         rrpc -->|命令执行与取消| rexec
+        rrpc -->|独立任务查询| rtasks
+        rtasks -->|后台执行| rexec
         rrpc -->|文件 RPC| rfiles
     end
 ```
@@ -112,6 +115,7 @@ Rust 图中调用向下委托，同层协作由明确连线表达。Rust 是正�
 | Rust 协议入口 | HTTP 请求、鉴权、上传下载、WSS 移交 | `rust/daemon/src/server.rs` |
 | Rust RPC 会话 | 顺序分发、事件发送及断连取消 | `rust/daemon/src/rpc.rs` |
 | Rust 命令操作 | Bash 进程组、双流、超时与清理 | `rust/daemon/src/exec.rs` |
+| Rust 独立任务 | 任务 ID 幂等、状态、最终结果、日志查询和显式取消 | `rust/daemon/src/tasks.rs` |
 | Rust 文件操作 | 文件 RPC、临时文件和原子替换 | `rust/daemon/src/files.rs` |
 | Rust token 校验 | 哈希加载、Bearer 校验 | `rust/daemon/src/auth.rs` |
 | Rust 生命周期协调 | 就绪状态、资源计数、排空和强制关闭通知 | `rust/daemon/src/lifecycle.rs` |
@@ -141,15 +145,15 @@ daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴
 
 
 
-RPC 服务器默认暴露 `exec`、`exec.stream`、`file.read`、`file.write` 和 `relay` 五类核心方法；每个 WebSocket 会话顺序执行请求，连接关闭时取消仍在执行的操作。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。
+RPC 服务器默认暴露 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read`、`file.write` 和 `relay`。每个 WebSocket 会话顺序执行请求，连接关闭时取消连接绑定操作；独立任务由 daemon 任务管理器持有，连接关闭后继续执行并可按 `taskId` 查询。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。
 
-命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。
+命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。独立任务以客户端提供的 `taskId` 去重，连接异常时调用方重试提交或查询，最终状态明确区分 `completed` 和 `failed`；任务结果仅保留在当前 daemon 生命周期内。
 
 文件 RPC 只接受绝对路径。大文件经 `/upload` 与 `/download` 的 HTTPS 流式端点传输，两个端点只支持直连 daemon，不经 relay。
 
 客户端负责直连和深度为一的 relay 编排。Rust `rex` 是核心操作客户端，覆盖直连、单跳 relay、HTTP 流式传输与交互会话；`rex-ops` 独立承接 SSH 部署、升级和迁移。Node.js 客户端与部署路径在迁移期继续保留。Pi extension 为适应 Pi 虚拟模块环境而保持独立实现，其协议行为以集成测试为依据。
 
-relay 只接受 IPv4 字面量和白名单内目标，只转发 `exec`、`exec.stream`、`file.read` 和 `file.write`，禁止嵌套 relay。网关在连接目标时校验证书，并将目标认证失败、证书失败和不可达状态区分为不同 RPC 错误。
+relay 只接受 IPv4 字面量和白名单内目标，只转发 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read` 和 `file.write`，禁止嵌套 relay。网关在连接目标时校验证书，并将目标认证失败、证书失败和不可达状态区分为不同 RPC 错误。
 
 ## Daemon 子模块
 
@@ -206,11 +210,13 @@ SSH 指纹不符、认证失败或目标验收失败时，系统不登记该目�
 
 ### 执行远程命令
 
-对持有有效 token 的命令请求，系统以 daemon 运行用户权限执行非空 `bash -lc` 命令，并交付退出码以及标准输出和标准错误。
+对持有有效 token 的命令请求，系统以 daemon 运行用户权限执行非空 `bash -lc` 命令，并交付明确的连接绑定或独立任务状态、退出码以及标准输出和标准错误。
 
 命令正常结束时，系统交付命令实际退出码和 Base64 编码的标准输出与标准错误。
 
 命令超过请求超时时间时，系统终止进程组并交付退出码 `124`。
+
+独立任务使用调用方提供的 taskId 去重，连接断开后任务继续执行；调用方只能在 exec.status 返回 completed 或 failed 及最终结果后判断成功，显式取消返回退出码 130。
 
 ### 读写远程文件
 

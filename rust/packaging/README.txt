@@ -17,4 +17,4 @@ run.sh 在 0.0.0.0 监听 port 文件中的端口，以当前用户权限运行�
 客户端 token 明文仅保存在部署端的 access 目录，不在服务器包内。
 将 access/hosts.json 中路径改为本机的绝对路径，再合并到现有客户端配置。
 客户端必须信任 access/server.crt，连接地址须匹配证书 SAN。
-前台进程退出即停止，SIGTERM/断连会取消活跃命令。root 用户可使用 `--systemd` 安装并启用 `remote-exec-rust-prototype.service`；排空升级属于后续迁移范围。
+前台进程退出即停止，连接绑定命令在 SIGTERM/断连时取消；独立任务可在连接断开后继续运行，但任务状态只保留在 daemon 生命周期内。root 用户可使用 `--systemd` 安装并启用 `remote-exec-rust-prototype.service`；排空升级属于后续迁移范围。

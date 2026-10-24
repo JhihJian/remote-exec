@@ -11,7 +11,7 @@
     {
       "id": "SC-REMOTE-EXEC-001",
       "status": "active",
-      "rule": "对持有有效 token 的命令请求，系统以 daemon 运行用户权限执行非空 `bash -lc` 命令，并交付退出码以及标准输出和标准错误。",
+      "rule": "对持有有效 token 的命令请求，系统以 daemon 运行用户权限执行非空 `bash -lc` 命令，并交付明确的连接绑定或独立任务状态、退出码以及标准输出和标准错误。",
       "document": {
         "path": "docs/architecture/ARCHITECTURE.md",
         "anchor": "执行远程命令"
@@ -26,6 +26,10 @@
         {
           "path": "src/daemon/operations/exec.js",
           "locator": "function spawnShell(command, cwd)"
+        },
+        {
+          "path": "rust/daemon/src/tasks.rs",
+          "locator": "pub fn start("
         }
       ],
       "behaviors": [
@@ -38,6 +42,17 @@
             "path": "test/integration/client.js",
             "locator": "await test(\"exec echo 中文\"",
             "oracle": "退出码为 0，解码后的标准输出等于请求命令产生的文本。"
+          }
+        },
+        {
+          "id": "BC-REMOTE-EXEC-001-DURABLE",
+          "kind": "variant",
+          "rule": "独立任务使用调用方提供的 taskId 去重，连接断开后任务继续执行；调用方只能在 exec.status 返回 completed 或 failed 及最终结果后判断成功，显式取消返回退出码 130。",
+          "outcome": "网络抖动或调用方会话结束不会造成静默中断，任务不会因部分输出被误判为成功。",
+          "test": {
+            "path": "test/rust-prototype/runner.js",
+            "locator": "独立任务在连接断开后继续并可查询最终结果",
+            "oracle": "断开提交连接后 exec.status 返回 completed，日志与最终 stdout 一致；重复 exec.start 不会重复执行；exec.cancel 最终返回 failed 和退出码 130。"
           }
         },
         {

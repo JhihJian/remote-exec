@@ -9,6 +9,7 @@ mod relay;
 mod rpc;
 mod server;
 mod supervisor;
+mod tasks;
 
 use std::{error::Error, io::BufReader, sync::Arc};
 use tokio::net::TcpListener;
@@ -121,6 +122,7 @@ async fn main() -> Result<(), AnyError> {
         listener.local_addr()?
     );
     let lifecycle = lifecycle::Lifecycle::new(opts.drain_timeout_ms);
+    let task_manager = tasks::TaskManager::new();
     lifecycle.mark_ready();
     let permits = Arc::new(tokio::sync::Semaphore::new(64));
     let relay_allow = opts.relay_allow;
@@ -146,10 +148,11 @@ async fn main() -> Result<(), AnyError> {
                 let acceptor = acceptor.clone();
                 let relay_allow = relay_allow.clone();
                 let lifecycle = lifecycle.clone();
+                let task_manager = task_manager.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
                     if let Ok(Ok(tls)) = tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
-                        server::serve(tls, hash, relay_allow, lifecycle).await;
+                        server::serve(tls, hash, relay_allow, lifecycle, task_manager).await;
                     }
                 });
             }

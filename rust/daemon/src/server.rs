@@ -139,6 +139,7 @@ pub async fn serve<S>(
     hash: [u8; 32],
     relay_allow: Vec<String>,
     lifecycle: std::sync::Arc<crate::lifecycle::Lifecycle>,
+    task_manager: std::sync::Arc<crate::tasks::TaskManager>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -267,6 +268,6 @@ pub async fn serve<S>(
             .max_frame_size(Some(files::MAX_PAYLOAD));
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(socket), Role::Server, Some(config))
             .await;
-        rpc::session(ws, relay_allow, lifecycle_for_session).await;
+        rpc::session(ws, relay_allow, lifecycle_for_session, task_manager).await;
     }
 }

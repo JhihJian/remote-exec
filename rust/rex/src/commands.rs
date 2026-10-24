@@ -110,14 +110,13 @@ async fn one_shot_exec(store: &Store, args: &[String]) -> Result<(), String> {
     if let Some(cwd) = store.host(&host).ok().and_then(|entry| entry.cwd) {
         params["cwd"] = serde_json::Value::from(cwd);
     }
-    let value = client::call_host(
+    let value = client::call_task_host(
         store,
         &host,
         &Call {
             method: "exec".into(),
             params,
         },
-        None,
         &mut interrupt,
     )
     .await?;

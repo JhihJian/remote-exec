@@ -1753,7 +1753,15 @@ dependencies = [
 name = "remote-exec-ops"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "rand 0.9.5",
  "remote-exec-rex",
+ "remote-exec-ssh",
+ "reqwest",
+ "rpassword",
+ "serde_json",
+ "sha2 0.10.9",
  "tokio",
 ]
 
@@ -1764,12 +1772,8 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "rand 0.9.5",
- "remote-exec-ssh",
  "remote-exec-tls",
  "reqwest",
- "rpassword",
- "russh",
- "russh-sftp",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",

@@ -3,8 +3,8 @@
 //! /run/remote-exec/supervisor.sock、/etc/remote-exec/credentials）。
 //! --via 网关主机升级属 Phase 4/5；本子命令只支持可直连 SSH 的主机。
 use crate::bundle;
-use crate::config::{self, Store};
 use crate::prompt;
+use remote_exec_rex::config::{self, Store};
 use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use serde_json::Value;
 use std::time::Duration;

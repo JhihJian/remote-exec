@@ -8,28 +8,13 @@ publish.workspace = true
 name = "rex"
 path = "src/main.rs"
 
-[features]
-default = []
-ops = [
-    "dep:remote-exec-ssh",
-    "dep:rpassword",
-    "dep:russh",
-    "dep:russh-sftp",
-    "dep:rustls",
-    "dep:rustls-pemfile",
-]
-
 [dependencies]
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-remote-exec-ssh = { path = "../ssh", optional = true }
 remote-exec-tls = { path = "../tls" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-rpassword = { version = "7", optional = true }
-russh = { version = "0.64", default-features = false, features = ["flate2", "ring"], optional = true }
-russh-sftp = { version = "3", optional = true }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
-rustls-pemfile = { version = "2", default-features = false, features = ["std"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = { version = "2", default-features = false, features = ["std"] }
 rustls-pki-types = { version = "1", default-features = false }
 rustyline = { version = "19", default-features = false, features = ["custom-bindings"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }

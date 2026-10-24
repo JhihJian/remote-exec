@@ -116,7 +116,7 @@ Rust 图中调用向下委托，同层协作由明确连线表达，原型与 No
 | Rust relay 操作 | 单跳白名单、目标 TLS、阶段化错误和总超时 | `rust/daemon/src/relay.rs` |
 | Rust supervisor 核心 | 状态持久化、重启恢复、降权 spawn、同 uid 控制面和 generation 切换 | `rust/daemon/src/supervisor.rs`、`rust/daemon/src/ctl.rs` |
 | Rust 核心客户端 rex | hosts.json/credentials 互操作、WSS 直连与 relay 信封、HTTP 流式传输、smoke、readline 交互 | `rust/rex/src/`（lib.rs、config.rs、client.rs、http.rs、smoke.rs、ui.rs、main.rs） |
-| Rust 运维扩展 rex-ops | SSH 部署、发布包处理、升级编排和 Node→Rust 迁移 | `rust/ops/src/main.rs`，复用 `rust/rex/src/` 的 ops feature |
+| Rust 运维扩展 rex-ops | SSH 部署、发布包处理、升级编排和 Node→Rust 迁移 | `rust/ops/src/main.rs`、`rust/ops/src/{bundle,deploy,migrate,prompt,upgrade}.rs`，调用核心 `remote-exec-rex` API |
 
 构建包由 `scripts/build-rust-prototype.sh` 与 `rust/packaging/` 生成，协议、排空、relay、禁网验证与 rex 客户端回归位于 `test/rust-prototype/`。运行条件、测量口径和剩余迁移范围见 [Rust 离线原型](../operations/RUST_OFFLINE_PROTOTYPE.md)。Rust 测试目前作为迁移期等价性证据，正式顶层能力仍需在部署和发布路径迁移完成后调整归属。
 

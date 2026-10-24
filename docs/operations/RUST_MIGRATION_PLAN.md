@@ -75,7 +75,7 @@ Cargo workspace（Phase 0 决策细节）：
 
 - `remote-execd`（服务包，目标机）：单二进制，子命令 `daemon`（默认）、`supervisor`、`ctl`、`smoke`。musl 静态 x86_64 与 ARM64，压缩包 <2,000,000 字节门禁。
 - `rex`（核心客户端包，操作机）：单二进制，提供默认交互模式、`exec`、文件操作、上传下载、relay 和 `hosts`。不加载 SSH/SFTP 与部署编排依赖。
-- `rex-ops`（运维扩展包，操作机）：独立二进制，提供 `deploy`、`upgrade`、`migrate`，通过共享的 rex 核心客户端和 SSH crate 调用核心协议与 supervisor 控制面。
+- `rex-ops`（运维扩展包，操作机）：独立二进制，提供 `deploy`、`upgrade`、`migrate`；源码与核心 rex 分离，通过核心客户端 API 和 SSH crate 调用核心协议与 supervisor 控制面。
 - 共享 crate：协议常量、hosts.json 解析、TLS/token 客户端逻辑（workspace 内复用，禁止复制粘贴）。
 
 Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，不依赖 Node remote-exec 代码。

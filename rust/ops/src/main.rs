@@ -1,6 +1,19 @@
 //! 运维扩展入口：部署、升级和迁移不进入核心 rex 客户端。
 
-use remote_exec_rex::{config, deploy, migrate, upgrade};
+mod bundle;
+mod deploy;
+mod migrate;
+mod prompt;
+mod upgrade;
+
+use remote_exec_rex::config;
+
+pub(crate) fn output(text: &str) {
+    use std::io::Write;
+    let mut stderr = std::io::stderr().lock();
+    let _ = write!(stderr, "{text}");
+    let _ = stderr.flush();
+}
 
 const HELP: &str = "用法: rex-ops <命令> ...
   deploy   SSH 部署并登记主机

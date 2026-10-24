@@ -12,14 +12,14 @@
 //! 客户端凭据无需任何变化。
 
 use crate::bundle;
-use crate::client::{self, Call, Interrupt};
-use crate::config::Store;
 use crate::output;
 use crate::upgrade::{
     CONTROL_SOCKET, CREDENTIALS_DIR, CURRENT_LINK, SshCommon, VERSIONS_DIR, arg_value, ctl,
     drive_with_retry, mktemp_staging, parse_ssh_args, remove_staging, unix_now_secs,
     unpack_generation,
 };
+use remote_exec_rex::client::{self, Call, Interrupt};
+use remote_exec_rex::config::Store;
 use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use std::time::Duration;
 

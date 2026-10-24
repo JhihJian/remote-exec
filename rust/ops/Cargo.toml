@@ -9,5 +9,13 @@ name = "rex-ops"
 path = "src/main.rs"
 
 [dependencies]
-remote-exec-rex = { path = "../rex", features = ["ops"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+remote-exec-rex = { path = "../rex" }
+remote-exec-ssh = { path = "../ssh" }
+rand = { version = "0.9", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+rpassword = "7"
+serde_json = { version = "1", default-features = false, features = ["std", "preserve_order"] }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "signal", "time", "net", "io-util", "fs", "sync", "process"] }

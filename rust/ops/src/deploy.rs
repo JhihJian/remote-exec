@@ -1,8 +1,8 @@
 //! rex-ops deploy：SSH 部署（直连 russh 或 --via 网关 deploy.ssh RPC）。
 use crate::bundle;
-use crate::config::{self, Credentials, Store};
 use crate::prompt;
 use crate::upgrade::trust_known_fingerprint;
+use remote_exec_rex::config::{self, Credentials, Store};
 use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -468,7 +468,7 @@ async fn verify_target(target: &DeployTarget, credentials: &InstallOutput) -> Re
         cwd: None,
         note: None,
     };
-    let call = crate::client::Call {
+    let call = remote_exec_rex::client::Call {
         method: "exec".into(),
         params: serde_json::json!({
             "command": format!("printf '\\n{marker}\\n'; id -un"),
@@ -477,7 +477,7 @@ async fn verify_target(target: &DeployTarget, credentials: &InstallOutput) -> Re
     };
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        crate::client::call_entry_pinned(
+        remote_exec_rex::client::call_entry_pinned(
             &entry,
             &credentials.token,
             &credentials.certificate,
@@ -521,14 +521,14 @@ impl GatewayDeploy {
         &self,
         store: &Store,
         params: Value,
-        on_event: Option<&mut (dyn FnMut(crate::client::StreamEvent) + Send)>,
+        on_event: Option<&mut (dyn FnMut(remote_exec_rex::client::StreamEvent) + Send)>,
     ) -> Result<Value, String> {
-        let call = crate::client::Call {
+        let call = remote_exec_rex::client::Call {
             method: "deploy.ssh".into(),
             params,
         };
-        let mut interrupt = crate::client::Interrupt(None);
-        crate::client::call_host(store, &self.name, &call, on_event, &mut interrupt).await
+        let mut interrupt = remote_exec_rex::client::Interrupt(None);
+        remote_exec_rex::client::call_host(store, &self.name, &call, on_event, &mut interrupt).await
     }
 
     /// 经网关探测目标 SSH 指纹。
@@ -586,7 +586,7 @@ impl GatewayDeploy {
             if remote.is_empty() {
                 return Err("网关暂存路径无效".into());
             }
-            crate::http::upload(&self.entry, &ca, &token, local, remote).await?;
+            remote_exec_rex::http::upload(&self.entry, &ca, &token, local, remote).await?;
         }
         self.prepared = Some(id);
         Ok(())
@@ -602,7 +602,7 @@ impl GatewayDeploy {
         identity: Option<&str>,
         password: Option<&str>,
         sudo_password: Option<&str>,
-        on_output: Option<&mut (dyn FnMut(crate::client::StreamEvent) + Send)>,
+        on_output: Option<&mut (dyn FnMut(remote_exec_rex::client::StreamEvent) + Send)>,
     ) -> Result<InstallOutput, String> {
         let staging_id = self.prepared.clone().unwrap_or_default();
         let mut install_target = serde_json::json!({
@@ -652,14 +652,14 @@ impl GatewayDeploy {
             }},
             "timeoutMs": 10000,
         });
-        let call = crate::client::Call {
+        let call = remote_exec_rex::client::Call {
             method: "relay".into(),
             params: envelope,
         };
-        let mut interrupt = crate::client::Interrupt(None);
+        let mut interrupt = remote_exec_rex::client::Interrupt(None);
         let envelope = tokio::time::timeout(
             Duration::from_secs(15),
-            crate::client::call_host(store, &self.name, &call, None, &mut interrupt),
+            remote_exec_rex::client::call_host(store, &self.name, &call, None, &mut interrupt),
         )
         .await
         .map_err(|_| "daemon 验收超时".to_owned())??;
@@ -698,7 +698,7 @@ fn marker_hex() -> String {
 
 /// 解码 exec 响应 stdout。
 fn decode_stdout(result: &Value) -> String {
-    String::from_utf8_lossy(&crate::client::decode_b64(result, "stdoutB64")).into_owned()
+    String::from_utf8_lossy(&remote_exec_rex::client::decode_b64(result, "stdoutB64")).into_owned()
 }
 
 /// 验收公共断言：退出码为 0 且输出尾部为 marker + 服务用户。
@@ -786,7 +786,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                 }
                 let attempt: Result<InstallOutput, String> = if let Some(gateway) = gateway.as_mut() {
                     gateway.ensure_prepared(store, &bundle).await?;
-                    let mut via_output = |event: crate::client::StreamEvent| {
+                    let mut via_output = |event: remote_exec_rex::client::StreamEvent| {
                         transcript.push(event.stderr, &event.data);
                     };
                     let call = gateway.install(

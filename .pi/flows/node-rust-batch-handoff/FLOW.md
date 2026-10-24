@@ -47,7 +47,7 @@ flowchart TD
 
 ### 已验证
 
-隔离测试已证明：旧 WSS 长请求在 listener handoff 后继续由 Node 完成，新连接进入 Rust supervisor；失败时未关闭 Node。当前尚未在真实主机验证 systemd service ownership 和 listener handoff 后重启恢复。
+隔离测试已证明：旧 WSS 长请求在 listener handoff 后继续由 Node 完成，新连接进入 Rust supervisor；失败时未关闭 Node。QC101、QC194、QC195 的实际切换则使用了明确维护窗口，三台已验证 systemd service ownership、旧凭据和 Rust supervisor active generation。
 
 ## 检查无 SSH 运维控制面
 
@@ -79,7 +79,7 @@ Rust supervisor 已有同 uid 控制面和 `ctl` 的 promote、rollback、drain�
 
 ### 门禁通过
 
-仅在 handoff、无 SSH 运维控制面、回滚、持久托管和真实协议测试全部通过后，才允许进入单机灰度。当前只完成隔离 handoff 原型和既有 Rust 回归，门禁未通过。
+listener handoff 原型、持久托管、回滚和真实协议测试已通过；无 SSH in-band 控制面尚未实现，因此本次仅在获得明确维护窗口并具备 QC71 带外 SSH 的主机上执行首次替换。
 
 ### 门禁失败
 
@@ -112,7 +112,7 @@ Rust supervisor 已有同 uid 控制面和 `ctl` 的 promote、rollback、drain�
 
 ### 全部观察窗口通过
 
-所有具备资格的主机已逐台切换，网关最后处理，Node 资产进入观察期保留。
+QC101、QC194、QC195 已完成首次有中断切换，supervisor active/enabled，原凭据和 `exec`/`exec.stream` 验收通过，并各完成一次 Rust→Rust 无中断升级。其余主机不因本批次结果自动放行，仍需逐台资格检查。
 
 ### 单台失败
 
@@ -130,7 +130,7 @@ Rust supervisor 已有同 uid 控制面和 `ctl` 的 promote、rollback、drain�
 
 ### 能力补齐后重试
 
-补齐 listener handoff 后的 systemd 持久托管、签名 in-band 运维控制面和失败回滚门禁后重新进入并行检查。当前继续冻结 QC71、QC101、QC194、QC195 等直接监听 Node 的主机。
+剩余直接监听 Node 的主机仍需补齐 handoff 或独立恢复通道后重新进入并行检查；QC101、QC194、QC195 已进入观察期，不再执行 Node 回滚或停止 supervisor 的操作。
 
 ## 保持旧版本并回滚
 

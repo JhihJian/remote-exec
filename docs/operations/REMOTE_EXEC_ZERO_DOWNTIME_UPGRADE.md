@@ -15,13 +15,13 @@
 
 目标设备只开放现有 remote-exec TLS/WSS 入口，设备可能没有 SSH、备用 TCP 端口或其他管理面。具备免密 SSH 的实验机只用于隔离测试，不能作为目标设备正式升级或回滚的依赖。
 
-当前 Node daemon 仍直接监听业务端口，WebSocket、relay、上传下载和执行中的命令属于当前进程。已实现隔离环境的 listener handoff 原型：Node 可将监听 FD 交给 Rust supervisor，旧连接继续由 Node 处理，新连接进入 Rust。当前尚未完成 handoff 后 supervisor 的 systemd 持久托管、生产回滚和无 SSH 运维控制面，因此不能直接用于生产迁移。
+当前 Node daemon 仍直接监听业务端口的主机，WebSocket、relay、上传下载和执行中的命令属于当前进程。隔离环境已有 listener handoff 原型；QC101、QC194、QC195 已通过维护窗口完成首次切换，当前由 Rust supervisor 持有 `3006` 并管理 generation。其余直接监听 Node 的主机仍不能直接执行无中断迁移。
 
 严格结论：
 
 - 后续升级可以实现“不主动切断已有连接”。
-- 首次把现有 Node daemon 迁移为可热升级架构时，必须先通过 listener handoff 门禁，再完成 supervisor 持久托管和无 SSH 控制面；当前原型尚未达到生产资格。
-- 一旦稳定入口已经预先部署，后续升级可以在只有一个外部端口、没有 SSH 的设备上完成。
+- 首次把现有 Node daemon 迁移为可热升级架构时，直接监听 Node 的旧主机仍需要一次受控维护窗口；QC101、QC194、QC195 已完成该切换并由 systemd supervisor 持久托管。
+- 一旦稳定入口已经预先部署，后续升级可以在只有一个外部端口、没有 SSH 之外的替代入口上完成。当前这些主机的控制面仍通过 QC71 等带外 SSH 执行。
 - 设备完全失联时，如果没有本地控制台或带外管理，任何远程方案都无法修复入口组件自身的故障。
 
 ## 推荐架构

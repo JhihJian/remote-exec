@@ -523,13 +523,14 @@ async fn try_upgrade(
     );
     let command = format!(
         "upgrade --package {} --sha256 {} --versions-dir {} --link {} \
---backend-protocol https --backend-ca {backend_ca} -- \
+--backend-protocol https --backend-ca {backend_ca} --backend-servername {} -- \
 {{version_dir}}/bin/remote-execd daemon --cert {}/server.crt --key {}/server.key \
 --token-sha256-file {}/token.sha256",
         ssh::shell_quote(&format!("{staging_path}/package.tar.gz")),
         sha256,
         VERSIONS_DIR,
         CURRENT_LINK,
+        ssh::shell_quote(&ssh_target.host),
         CREDENTIALS_DIR,
         CREDENTIALS_DIR,
         CREDENTIALS_DIR,

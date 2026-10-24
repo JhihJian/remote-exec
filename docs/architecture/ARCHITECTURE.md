@@ -120,7 +120,7 @@ Rust 图中调用向下委托，同层协作由明确连线表达。Rust 是正�
 | Rust token 校验 | 哈希加载、Bearer 校验 | `rust/daemon/src/auth.rs` |
 | Rust 生命周期协调 | 就绪状态、资源计数、排空和强制关闭通知 | `rust/daemon/src/lifecycle.rs` |
 | Rust relay 操作 | 单跳白名单、目标 TLS、阶段化错误和总超时 | `rust/daemon/src/relay.rs` |
-| Rust supervisor 核心 | 状态持久化、重启恢复、降权 spawn、同 uid 控制面和 generation 切换；支持从既有 Node listener FD 启动的 handoff 原型 | `rust/daemon/src/supervisor.rs`、`rust/daemon/src/ctl.rs`、`src/daemon/handoff.js` |
+| Rust supervisor 核心 | 状态持久化、重启恢复、降权 spawn、同 uid 控制面和 generation 切换；支持从既有 Node listener FD 启动的 handoff 原型及迁移证书的 backend TLS server-name | `rust/daemon/src/supervisor.rs`、`rust/daemon/src/ctl.rs`、`src/daemon/handoff.js` |
 | Rust 核心客户端 rex | hosts.json/credentials 互操作、WSS 直连与 relay 信封、HTTP 流式传输、smoke、readline 交互 | `rust/rex/src/`（lib.rs、config.rs、client.rs、http.rs、smoke.rs、ui.rs、main.rs） |
 | Rust 运维扩展 rex-ops | SSH 部署、发布包处理、升级编排和 Node→Rust 迁移 | `rust/ops/src/main.rs`、`rust/ops/src/{bundle,deploy,migrate,prompt,upgrade}.rs`，调用核心 `remote-exec-rex` API |
 

@@ -31,7 +31,7 @@ fn usage() -> String {
      remote-execd ctl --control <sock> upgrade --package <tar.gz> --sha256 <hex> \\\n\
      \x20 --versions-dir <dir> [--link <path>] [--cwd <dir>] [--env K=V]...\
 \
-     \x20 [--backend-protocol http|https] [--backend-ca <pem>] -- <command...>\n\
+     \x20 [--backend-protocol http|https] [--backend-ca <pem>] [--backend-servername <name>] -- <command...>\n\
      upgrade 会在 command 末尾追加 --port <port>，端口由 ctl 分配并指向回环 backend。\n\
      command 中的 {version_dir} 会替换为解包后的版本目录绝对路径，\n\
      用于引用包内解压出的二进制（如 {version_dir}/bin/remote-execd）。"
@@ -230,6 +230,7 @@ struct UpgradeOptions {
     env: Vec<(String, String)>,
     backend_protocol: String,
     backend_ca: Option<String>,
+    backend_server_name: Option<String>,
     command: Vec<String>,
 }
 
@@ -242,6 +243,7 @@ fn parse_upgrade_args(args: &[String]) -> Result<UpgradeOptions, String> {
     let mut env = Vec::new();
     let mut backend_protocol = String::new();
     let mut backend_ca = None;
+    let mut backend_server_name = None;
     let mut command = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -267,6 +269,7 @@ fn parse_upgrade_args(args: &[String]) -> Result<UpgradeOptions, String> {
                 backend_protocol = value;
             }
             "--backend-ca" => backend_ca = Some(value),
+            "--backend-servername" => backend_server_name = Some(value),
             "--env" => {
                 let Some((key, env_value)) = value.split_once('=') else {
                     return Err("--env 需要 K=V 形式".into());
@@ -298,6 +301,7 @@ fn parse_upgrade_args(args: &[String]) -> Result<UpgradeOptions, String> {
         env,
         backend_protocol,
         backend_ca,
+        backend_server_name,
         command,
     })
 }
@@ -418,6 +422,9 @@ fn upgrade(socket: &Path, args: &[String]) -> Result<Value, String> {
         let ca_text =
             fs::read_to_string(ca).map_err(|error| format!("读取 CA {} 失败: {error}", ca))?;
         backend["ca"] = json!(ca_text);
+        if let Some(server_name) = options.backend_server_name {
+            backend["tlsServerName"] = json!(server_name);
+        }
     }
     let mut start_request = json!({
         "method": "start",
@@ -639,6 +646,8 @@ mod tests {
             "A=1",
             "--env",
             "B=2",
+            "--backend-servername",
+            "192.168.1.101",
             "--",
             "/bin/sh",
             "-c",
@@ -658,6 +667,10 @@ mod tests {
                 ("A".to_owned(), "1".to_owned()),
                 ("B".to_owned(), "2".to_owned())
             ]
+        );
+        assert_eq!(
+            options.backend_server_name.as_deref(),
+            Some("192.168.1.101")
         );
         assert_eq!(options.command, vec!["/bin/sh", "-c", "sleep 1"]);
     }

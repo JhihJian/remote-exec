@@ -29,6 +29,7 @@ struct Backend {
     port: u16,
     protocol: String,
     ca: Option<String>,
+    server_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -264,6 +265,7 @@ fn persistent_state(state: &State) -> Value {
                     "port": generation.backend.port,
                     "protocol": generation.backend.protocol,
                     "ca": generation.backend.ca,
+                    "tlsServerName": generation.backend.server_name,
                 },
                 "managed": generation.managed,
                 "command": command,
@@ -329,17 +331,6 @@ fn parse_persistent_state(value: Value) -> io::Result<State> {
         let backend_value = generation
             .get("backend")
             .ok_or_else(|| invalid(format!("{label}.backend 缺失")))?;
-        let backend_object = exact_object(
-            backend_value,
-            &format!("{label}.backend"),
-            &["host", "port", "protocol", "ca"],
-        )?;
-        if !backend_object
-            .get("ca")
-            .is_some_and(|value| value.is_null() || value.is_string())
-        {
-            return Err(invalid(format!("{label}.backend.ca 必须是字符串或 null")));
-        }
         let backend = validate_backend(backend_value, &format!("{label}.backend"))?;
         let managed = generation
             .get("managed")
@@ -471,6 +462,19 @@ async fn persist_state(state: &State, path: Option<&Path>) -> io::Result<()> {
 }
 
 fn validate_backend(value: &Value, label: &str) -> io::Result<Backend> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(format!("{label} 必须是 JSON 对象")))?;
+    if !(object.len() == 4 || object.len() == 5)
+        || object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "host" | "port" | "protocol" | "ca" | "tlsServerName"
+            )
+        })
+    {
+        return Err(invalid(format!("{label} 包含未知或缺失字段")));
+    }
     let host = value
         .get("host")
         .and_then(Value::as_str)
@@ -494,15 +498,30 @@ fn validate_backend(value: &Value, label: &str) -> io::Result<Backend> {
     if !matches!(protocol, "http" | "https") {
         return Err(invalid(format!("{label}.protocol 必须是 http 或 https")));
     }
-    let ca = value.get("ca").and_then(Value::as_str).map(str::to_owned);
+    let ca_value = value.get("ca");
+    if ca_value.is_some_and(|value| !value.is_null() && !value.is_string()) {
+        return Err(invalid(format!("{label}.ca 必须是字符串或 null")));
+    }
+    let ca = ca_value.and_then(Value::as_str).map(str::to_owned);
     if protocol == "https" && ca.is_none() {
         return Err(invalid(format!("{label}.ca 必须是 PEM 字符串")));
     }
+    let server_name = match value.get("tlsServerName") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| invalid(format!("{label}.tlsServerName 必须是非空字符串或 null")))?
+                .to_owned(),
+        ),
+    };
     Ok(Backend {
         host: host.to_owned(),
         port,
         protocol: protocol.to_owned(),
         ca,
+        server_name,
     })
 }
 
@@ -515,6 +534,7 @@ fn snapshot(generation: &Generation) -> Value {
             "port": generation.backend.port,
             "protocol": generation.backend.protocol,
             "ca": generation.backend.ca,
+            "tlsServerName": generation.backend.server_name,
         },
         "connections": generation.connections,
         "process": generation.pid.map(|pid| json!({"pid": pid, "exited": false})),
@@ -574,13 +594,18 @@ async fn readiness(backend: &Backend) -> io::Result<()> {
             .ok_or_else(|| invalid("HTTPS backend 缺少 CA"))?;
         let config = relay::build_tls(ca).map_err(|error| invalid(error.message))?;
         let connector = tokio_rustls::TlsConnector::from(config);
-        let name = tokio_rustls::rustls::pki_types::ServerName::try_from(backend.host.clone())
+        let server_name = backend
+            .server_name
+            .as_deref()
+            .unwrap_or(&backend.host)
+            .to_owned();
+        let name = tokio_rustls::rustls::pki_types::ServerName::try_from(server_name.clone())
             .map_err(|_| invalid("backend host 不是有效 TLS 名称"))?;
         let stream = connector
             .connect(name, socket)
             .await
             .map_err(|error| invalid(error.to_string()))?;
-        check_response(stream, &backend.host).await
+        check_response(stream, &server_name).await
     } else {
         check_response(socket, &backend.host).await
     }

@@ -293,6 +293,11 @@ pub async fn start_task(
     lifecycle: &std::sync::Arc<crate::lifecycle::Lifecycle>,
 ) -> Result<Value, RpcError> {
     let id = task_id(params)?;
+    validate_task_params(params)?;
+    manager.start(id, params.clone(), lifecycle)
+}
+
+fn validate_task_params(params: &Value) -> Result<(), RpcError> {
     params
         .get("command")
         .and_then(Value::as_str)
@@ -300,7 +305,24 @@ pub async fn start_task(
         .ok_or_else(|| RpcError::invalid("params.command 必须是非空字符串"))?;
     let _ = positive(params, "timeoutMs", 300_000)?;
     let _ = positive(params, "outputBytesCap", 1024 * 1024)?;
-    manager.start(id, params.clone(), lifecycle)
+    Ok(())
+}
+
+pub async fn run_reliable(
+    params: &Value,
+    manager: &std::sync::Arc<crate::tasks::TaskManager>,
+    lifecycle: &std::sync::Arc<crate::lifecycle::Lifecycle>,
+) -> Result<Value, RpcError> {
+    validate_task_params(params)?;
+    let task_id = match params.get("taskId") {
+        Some(_) => {
+            let id = task_id(params)?;
+            manager.start(id.clone(), params.clone(), lifecycle)?;
+            id
+        }
+        None => manager.start_ephemeral(params.clone(), lifecycle)?,
+    };
+    manager.wait(&task_id).await
 }
 
 fn task_param(params: &Value) -> Result<String, RpcError> {

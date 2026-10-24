@@ -199,9 +199,8 @@ async fn dispatch(
         return Err(RpcError::invalid("params 必须是对象"));
     }
     match method {
-        "exec" | "exec.stream" => {
-            crate::exec::run(params, method == "exec.stream", id, out, cancel).await
-        }
+        "exec" => crate::exec::run_reliable(params, task_manager, lifecycle).await,
+        "exec.stream" => crate::exec::run(params, true, id, out, cancel).await,
         "exec.start" => crate::exec::start_task(params, task_manager, lifecycle).await,
         "exec.status" => crate::exec::task_status(params, task_manager),
         "exec.log" => crate::exec::task_log(params, task_manager),

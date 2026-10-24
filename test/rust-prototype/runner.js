@@ -227,10 +227,52 @@ async function main() {
     await test("客户端断连清理子进程", async () => {
       const pidfile = path.join(tmp, "cancel-pid");
       const other = await client();
-      const pending = other.call("exec", { command: `sleep 60 & echo $! > ${shellQuote(pidfile)}; wait` });
+      const pending = other.call("exec.stream", { command: `sleep 60 & echo $! > ${shellQuote(pidfile)}; wait` });
       const rejected = assert.rejects(pending, /中断|关闭/);
       await eventually(() => fs.existsSync(pidfile));
       other.abort(); await rejected;
+      await eventually(() => !running(Number(fs.readFileSync(pidfile, "utf8"))));
+    });
+    await test("exec 连接断开后仍执行至自然结束", async () => {
+      const resultFile = path.join(tmp, "exec-disconnect-result");
+      const taskId = `exec-disconnect-${crypto.randomBytes(8).toString("hex")}`;
+      const other = await client();
+      const pending = other.call("exec", {
+        taskId,
+        command: `sleep 0.6; printf exec-durable > ${shellQuote(resultFile)}`,
+        timeoutMs: 5000,
+      });
+      await wait(100);
+      other.abort();
+      await assert.rejects(pending, /中断|关闭/);
+      let state;
+      await eventually(async () => {
+        state = await c.call("exec.status", { taskId });
+        return state.status === "completed";
+      });
+      assert.equal(state.result.exitCode, 0);
+      assert.equal(fs.readFileSync(resultFile, "utf8"), "exec-durable");
+      await c.call("exec.forget", { taskId });
+    });
+    await test("exec 断开后 timeoutMs 仍由远端执行器生效", async () => {
+      const pidfile = path.join(tmp, "exec-disconnect-timeout-pid");
+      const taskId = `exec-timeout-${crypto.randomBytes(8).toString("hex")}`;
+      const other = await client();
+      const pending = other.call("exec", {
+        taskId,
+        command: `sleep 60 & echo $! > ${shellQuote(pidfile)}; wait`,
+        timeoutMs: 300,
+      });
+      await eventually(() => fs.existsSync(pidfile));
+      other.abort();
+      await assert.rejects(pending, /中断|关闭/);
+      let state;
+      await eventually(async () => {
+        state = await c.call("exec.status", { taskId });
+        return state.status === "failed";
+      });
+      assert.equal(state.result.exitCode, 124);
+      assert.equal(state.result.reason, "timeout");
       await eventually(() => !running(Number(fs.readFileSync(pidfile, "utf8"))));
     });
     await test("独立任务在连接断开后继续并可查询最终结果", async () => {

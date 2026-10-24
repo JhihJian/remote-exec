@@ -145,9 +145,9 @@ daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴
 
 
 
-RPC 服务器默认暴露 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read`、`file.write` 和 `relay`。每个 WebSocket 会话顺序执行请求，连接关闭时取消连接绑定操作；独立任务由 daemon 任务管理器持有，连接关闭后继续执行并可按 `taskId` 查询。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。
+RPC 服务器默认暴露 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read`、`file.write` 和 `relay`。每个 WebSocket 会话顺序执行请求，连接关闭时只取消连接绑定的 `exec.stream`；`exec` 和独立任务由 daemon 任务管理器持有，连接关闭后继续执行，并可按 `taskId` 查询最终结果。`deploy.ssh` 由 daemon 的 `ops` feature 提供，Rust 正式服务包启用该 feature，核心构建仍可关闭它。
 
-命令执行以 `bash -lc` 启动独立进程组。普通执行收集有限输出；流式执行按固定分片发送输出，在超时或连接中断时终止对应进程组。独立任务以客户端提供的 `taskId` 去重，连接异常时调用方重试提交或查询，最终状态明确区分 `completed` 和 `failed`；任务结果仅保留在当前 daemon 生命周期内。
+命令执行以 `bash -lc` 启动独立进程组。`exec` 和独立任务收集有限输出并由远端执行器计时；`exec.stream` 按固定分片发送输出，在超时或连接中断时终止对应进程组。独立任务以客户端提供的 `taskId` 去重，连接异常时调用方重试提交或查询，最终状态明确区分 `completed` 和 `failed`；任务结果仅保留在当前 daemon 生命周期内。
 
 文件 RPC 只接受绝对路径。大文件经 `/upload` 与 `/download` 的 HTTPS 流式端点传输，两个端点只支持直连 daemon，不经 relay。
 

@@ -9,6 +9,7 @@ const {
   RELAY_MAX_CONCURRENT,
   RELAY_MAX_INNER_TIMEOUT_MS,
   RELAY_MAX_TASK_TIMEOUT_MS,
+  RELAY_MAX_TASK_TOTAL_TIMEOUT_MS,
   RELAY_MAX_TOTAL_TIMEOUT_MS,
   RELAY_SLACK_MS,
   STREAM_SEND_STALL_MS,
@@ -77,14 +78,16 @@ function createRelayHandler(relayAllow = DEFAULT_RELAY_ALLOW) {
     }
 
     const innerParams = { ...(request.params || {}) };
-    const innerLimit = request.method === "exec.start" ? RELAY_MAX_TASK_TIMEOUT_MS : RELAY_MAX_INNER_TIMEOUT_MS;
+    const taskMethod = request.method === "exec" || request.method === "exec.start";
+    const innerLimit = taskMethod ? RELAY_MAX_TASK_TIMEOUT_MS : RELAY_MAX_INNER_TIMEOUT_MS;
     if (innerParams.timeoutMs !== undefined) {
       innerParams.timeoutMs = Math.min(Math.max(1, Number(innerParams.timeoutMs) || 0), innerLimit);
     }
     const innerBudget = Math.min(innerParams.timeoutMs || DEFAULT_TIMEOUT_MS, RELAY_MAX_INNER_TIMEOUT_MS);
+    const totalLimit = taskMethod ? RELAY_MAX_TASK_TOTAL_TIMEOUT_MS : RELAY_MAX_TOTAL_TIMEOUT_MS;
     const totalTimeout = Math.min(
       Number(params.timeoutMs) || RELAY_CONNECT_BUDGET_MS + innerBudget + RELAY_SLACK_MS,
-      RELAY_MAX_TOTAL_TIMEOUT_MS,
+      totalLimit,
     );
 
     activeRelays += 1;

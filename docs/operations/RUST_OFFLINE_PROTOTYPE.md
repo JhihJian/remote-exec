@@ -4,7 +4,7 @@
 
 Rust 原型用于验证小于 2MB 的离线部署包：Linux 目标机通过 SSH 接收本地准备好的文件，安装与启动阶段只使用本机已有的 Bash 和常见系统工具。网络、TLS 和应用运行库静态编入服务程序，证书在部署端生成。
 
-当前原型已实现 TLS/WSS、连接绑定的 `exec`/`exec.stream`、连接无关的 `exec.start`/`exec.status`/`exec.log`/`exec.cancel`/`exec.forget`、`file.read`、`file.write`、单跳 `relay`、HTTPS 上传和下载。现有 Node 客户端能够直连接入，命令保持 `bash -lc` 语义。正式 Node daemon、发布包和升级流程继续独立维护。
+当前原型已实现 TLS/WSS、连接无关的 `exec`、连接绑定的 `exec.stream`、连接无关的 `exec.start`/`exec.status`/`exec.log`/`exec.cancel`/`exec.forget`、`file.read`、`file.write`、单跳 `relay`、HTTPS 上传和下载。现有 Node 客户端能够直连接入，命令保持 `bash -lc` 语义。正式 Node daemon、发布包和升级流程继续独立维护。
 
 | 范围 | 当前状态 |
 | --- | --- |
@@ -22,7 +22,7 @@ Rust 原型用于验证小于 2MB 的离线部署包：Linux 目标机通过 SSH
 
 Rustls/ring 承担 TLS，Tungstenite 承担 WebSocket 帧处理，Hyper 承担 HTTP/1.1 消息边界，Tokio 承担异步 I/O 和子进程。应用模块保持与正式服务相同的 TLS 与 token 权限边界。原型只监听 TLS，不提供明文远程接口。
 
-同连接最多保留一个等待请求，额外请求使连接关闭。普通命令的 stdout/stderr 各自默认截断至 1MiB，仍继续读取管道。连接绑定命令的客户端断连会取消活跃命令；独立任务由 daemon 生命周期持有，客户端可断线后按同一 `taskId` 查询。独立任务最多保留 256 个，结果在 daemon 重启后不保留。流式输出以最多 16KiB 片段发送，发送停滞超过 30 秒关闭连接并取消命令。超时退出码为 124。进程组终止先发送 SIGTERM，2 秒后仍未退出才发送 SIGKILL，并排空终止后的管道输出。服务 SIGTERM 进入排空，既有连接请求完成后退出，排空超时才强制关闭连接。
+同连接最多保留一个等待请求，额外请求使连接关闭。`exec` 和独立任务的 stdout/stderr 各自默认截断至 1MiB，仍继续读取管道；`exec` 的 `timeoutMs` 由远端执行器计时，连接断开不会取消进程。只有 `exec.stream` 是连接绑定命令，客户端断连会取消活跃进程。独立任务由 daemon 生命周期持有，客户端可断线后按同一 `taskId` 查询。独立任务最多保留 256 个，结果在 daemon 重启后不保留。流式输出以最多 16KiB 片段发送，发送停滞超过 30 秒关闭连接并取消命令。超时退出码为 124。进程组终止先发送 SIGTERM，2 秒后仍未退出才发送 SIGKILL，并排空终止后的管道输出。服务 SIGTERM 进入排空，既有连接请求和独立任务完成后退出，排空超时才强制关闭连接。
 
 RPC 的文件写入与 HTTPS 上传均先写同目录临时文件，再原子 rename。失败和取消删除临时文件。HTTPS 上传计算 SHA-256，下载保留 Content-Length，由客户端校验哈希。Base64 使用严格解码，数值参数要求正整数。
 

@@ -14,7 +14,7 @@
 
 | 能力 | Node 现状 | Rust 现状 | 结论 |
 | --- | --- | --- | --- |
-| exec / exec.stream / exec.start / exec.status / exec.log / exec.cancel / exec.forget / file.read / file.write | 完整，测试覆盖 | 完整，连接绑定与独立任务语义已区分 | Rust 已覆盖独立任务断线继续、taskId 幂等、状态/日志/最终结果、显式取消和清理；连接绑定调用仍按断连取消 |
+| exec / exec.stream / exec.start / exec.status / exec.log / exec.cancel / exec.forget / file.read / file.write | 完整，测试覆盖 | 完整，exec 与独立任务可靠执行，exec.stream 保持连接绑定 | Rust 已覆盖 exec 断线继续、独立任务 taskId 幂等、状态/日志/最终结果、显式取消和清理；只有 exec.stream 按断连取消 |
 | /upload /download | 完整 | 完整（更严格：fsync、超时） | 已覆盖 |
 | relay | 完整（错误带 data.stage、外层 timeoutMs 覆盖、Binary 帧仅 Text 终态） | 完整（错误带 stage、外层 timeoutMs、TLS pin 有效期检查） | Phase 1 已对齐主要错误阶段、总超时和证书有效期；Binary 帧仍需协议专项复核 |
 | deploy.ssh 网关 RPC | 完整 | 已由 Rust daemon `ops` feature 提供，Rust 正式发布包启用 | Rust 正式网关路径已接通 | |

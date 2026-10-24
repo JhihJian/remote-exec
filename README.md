@@ -148,7 +148,7 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 
 | 方法 | 主要参数 | 返回内容 |
 | --- | --- | --- |
-| `exec` | `command`、可选 `cwd`、`timeoutMs`、`outputBytesCap` | 退出码、Base64 编码的 stdout/stderr、截断标记 |
+| `exec` | `command`、可选 `cwd`、`timeoutMs`、`outputBytesCap`、可选 `taskId` | 退出码、Base64 编码的 stdout/stderr、截断标记 |
 | `exec.stream` | `command`、可选 `cwd`、`timeoutMs` | 多个 output 事件，最后返回退出码和字节数 |
 | `exec.start` | `taskId`、`command`、可选 `cwd`、`timeoutMs`、`outputBytesCap` | 创建独立任务并返回任务状态，连接关闭后任务继续 |
 | `exec.status` | `taskId` | 查询任务状态和完成后的最终结果 |
@@ -164,7 +164,8 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 
 - 文件和命令输出使用 Base64，保证二进制内容可传输。
 - `exec` 默认超时 5 分钟，默认每个输出流最多收集 1MB。
-- `exec` 和 `exec.stream` 是连接绑定调用，连接断开会终止对应进程组；它们适合需要实时响应或明确取消语义的短调用。
+- `exec` 是连接无关调用，服务端会等待命令结束后返回结果；连接断开不会终止进程组。调用方需要断线恢复时应提供唯一 `taskId`，随后用 `exec.status` 查询；未提供 `taskId` 的调用在服务端完成后自动清理，断线后不能找回结果。
+- `exec.stream` 是连接绑定调用，连接断开会终止对应进程组；它适合需要实时响应或明确取消语义的调用。
 - `exec.start` 是连接无关调用。调用方必须生成唯一 `taskId`，服务端在 daemon 生命周期内保存最多 256 个任务；断线后使用同一 `taskId` 重试 `exec.start` 或查询 `exec.status`，不会重复启动命令。已结束任务可用 `exec.forget` 清理，运行中的任务不能清理。
 - 独立任务的 `timeoutMs` 只限制远端命令执行时间，不限制后续状态查询。任务最终状态为 `completed` 或 `failed`，结果中的 `exitCode`、`reason`、stdout/stderr 和 `truncated` 必须一起验收；连接异常且无法查询最终状态时不能把部分输出当作成功。
 - `exec.log` 在任务完成后返回已收集的 stdout/stderr；任务运行中暂不提供增量日志。
@@ -259,7 +260,7 @@ node src/tui/app.js gateway
 
 每个工具都定义了 `renderCall`，Pi TUI 会直接显示调用的主机与命令（如 `remote_bash [nm105] $ ls -la`），而不是只显示工具名。
 
-`remote_bash` 使用独立任务协议提交命令，并按 `taskId` 查询最终状态；普通网络断开会重连查询，不会取消远端进程。执行期间每秒刷新“执行中 · 已用时 3.0s”，结束后显示最终“耗时 3.2s”。耗时从插件开始执行工具到确认最终结果计量，包含连接、网关转发、远程执行和重连等待。用户取消工具调用时会发送 `exec.cancel`，并以明确的取消结果结束。每次调用独立计时，最终耗时保存在工具结果中，重新打开会话仍可显示。输出默认显示前 10 行，展开后查看完整内容。
+`remote_bash` 使用带 `taskId` 的 `exec` 独立任务调用，并按 `taskId` 查询最终状态；普通网络断开会重连查询，不会取消远端进程。执行期间每秒刷新“执行中 · 已用时 3.0s”，结束后显示最终“耗时 3.2s”。耗时从插件开始执行工具到确认最终结果计量，包含连接、网关转发、远程执行和重连等待。用户取消工具调用时会发送 `exec.cancel`，并以明确的取消结果结束。每次调用独立计时，最终耗时保存在工具结果中，重新打开会话仍可显示。输出默认显示前 10 行，展开后查看完整内容。
 
 注册 extension：
 

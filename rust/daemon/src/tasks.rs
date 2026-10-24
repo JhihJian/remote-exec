@@ -1,17 +1,22 @@
 use crate::{exec, rpc::RpcError};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
 const MAX_TASKS: usize = 256;
+static NEXT_EPHEMERAL_ID: AtomicU64 = AtomicU64::new(1);
 
 struct Task {
     id: String,
     params: Value,
     cancel: watch::Sender<bool>,
     state: Mutex<TaskState>,
+    notify: tokio::sync::Notify,
 }
 
 struct TaskState {
@@ -42,6 +47,30 @@ impl TaskManager {
         params: Value,
         lifecycle: &Arc<crate::lifecycle::Lifecycle>,
     ) -> Result<Value, RpcError> {
+        self.start_inner(id, params, lifecycle, true)
+    }
+
+    pub fn start_ephemeral(
+        self: &Arc<Self>,
+        params: Value,
+        lifecycle: &Arc<crate::lifecycle::Lifecycle>,
+    ) -> Result<String, RpcError> {
+        let id = format!(
+            "exec-{}-{}",
+            std::process::id(),
+            NEXT_EPHEMERAL_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        self.start_inner(id.clone(), params, lifecycle, false)?;
+        Ok(id)
+    }
+
+    fn start_inner(
+        self: &Arc<Self>,
+        id: String,
+        params: Value,
+        lifecycle: &Arc<crate::lifecycle::Lifecycle>,
+        retain: bool,
+    ) -> Result<Value, RpcError> {
         let command_params = without_task_id(&params);
         let guard = lifecycle
             .acquire("task")
@@ -70,12 +99,15 @@ impl TaskManager {
                     result: None,
                     error: None,
                 }),
+                notify: tokio::sync::Notify::new(),
             });
-            tasks.insert(id, task.clone());
+            tasks.insert(id.clone(), task.clone());
             (task, cancel_rx)
         };
 
         let task_for_worker = task.clone();
+        let manager_for_worker = self.clone();
+        let task_id = id.clone();
         tokio::spawn(async move {
             let _guard = guard;
             let (out, _outputs) = mpsc::channel::<Message>(1);
@@ -89,8 +121,40 @@ impl TaskManager {
             )
             .await;
             task_for_worker.finish(result);
+            if !retain {
+                manager_for_worker.remove(&task_id);
+            }
         });
         Ok(task.snapshot())
+    }
+
+    pub async fn wait(&self, id: &str) -> Result<Value, RpcError> {
+        let task = self
+            .tasks
+            .lock()
+            .expect("task mutex")
+            .get(id)
+            .cloned()
+            .ok_or_else(|| RpcError::new(-32040, "任务不存在或已被清理"))?;
+        loop {
+            let notified = task.notify.notified();
+            let snapshot = task.snapshot();
+            match snapshot.get("status").and_then(Value::as_str) {
+                Some("completed") | Some("failed") => {
+                    if let Some(error) = snapshot.get("error") {
+                        return Err(RpcError::new(
+                            error.get("code").and_then(Value::as_i64).unwrap_or(-32000) as i32,
+                            error
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("任务执行失败"),
+                        ));
+                    }
+                    return Ok(snapshot.get("result").cloned().unwrap_or(Value::Null));
+                }
+                _ => notified.await,
+            }
+        }
     }
 
     pub fn status(&self, id: &str) -> Result<Value, RpcError> {
@@ -140,6 +204,10 @@ impl TaskManager {
         tasks.remove(id);
         Ok(json!({"taskId": id, "forgotten": true}))
     }
+
+    fn remove(&self, id: &str) {
+        self.tasks.lock().expect("task mutex").remove(id);
+    }
 }
 
 impl Task {
@@ -162,6 +230,7 @@ impl Task {
                 });
             }
         }
+        self.notify.notify_waiters();
     }
 
     fn snapshot(&self) -> Value {

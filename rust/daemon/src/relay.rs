@@ -22,6 +22,7 @@ const DEFAULT_TIMEOUT: u64 = 5 * 60 * 1000;
 const MAX_INNER_TIMEOUT: u64 = 10 * 60 * 1000;
 const MAX_TASK_TIMEOUT: u64 = 24 * 60 * 60 * 1000;
 const MAX_TOTAL_TIMEOUT: u64 = 15 * 60 * 1000;
+const MAX_TASK_TOTAL_TIMEOUT: u64 = 24 * 60 * 60 * 1000;
 const RELAY_SLACK: u64 = 15 * 1000;
 const MAX_CONCURRENT: usize = 8;
 const DEFAULT_ALLOW: [&str; 4] = [
@@ -223,7 +224,8 @@ async fn run(call: RelayCall<'_>) -> Result<Value, RpcError> {
     }
     let mut inner_params = params_object(request.get("params"))?;
     // 仅当调用方显式提供 timeoutMs 时才改写内层超时，并限制在上限内。
-    let inner_limit = if method == "exec.start" {
+    let task_method = matches!(method, "exec" | "exec.start");
+    let inner_limit = if task_method {
         MAX_TASK_TIMEOUT
     } else {
         MAX_INNER_TIMEOUT
@@ -237,16 +239,21 @@ async fn run(call: RelayCall<'_>) -> Result<Value, RpcError> {
         None => DEFAULT_TIMEOUT,
     };
     // 外层 timeoutMs 可覆盖总超时，默认按连接预算 + 内层预算 + 余量推算。
+    let total_limit = if task_method {
+        MAX_TASK_TOTAL_TIMEOUT
+    } else {
+        MAX_TOTAL_TIMEOUT
+    };
     let default_total = inner_budget
         .saturating_add(CONNECT_BUDGET.as_millis() as u64)
         .saturating_add(RELAY_SLACK)
-        .min(MAX_TOTAL_TIMEOUT);
+        .min(total_limit);
     let total_timeout = outer
         .get("timeoutMs")
         .and_then(Value::as_u64)
         .filter(|value| *value > 0)
         .unwrap_or(default_total)
-        .min(MAX_TOTAL_TIMEOUT);
+        .min(total_limit);
     let (mut ws, _) = connect(host, port, token, ca).await?;
     let message = json!({"id": 1, "method": method, "params": inner_params});
     ws.send(Message::Text(message.to_string().into()))

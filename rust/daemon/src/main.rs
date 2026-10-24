@@ -46,6 +46,7 @@ fn options(args: &[String]) -> Result<Option<Options>, AnyError> {
   daemon      运行 daemon（默认，可省略）\n\
   supervisor  运行固定入口 supervisor\n\
   ctl         supervisor 控制面客户端（status/upgrade/rollback/retire）\n\
+supervisor 参数: --host <host> --port <port> --control <sock> [--state <file>] [--run-user <user>] [--listener-fd <fd>]\n\
 daemon 参数: --host <host> --port <port> --cert <pem> --key <pem> --token-sha256-file <file> [--relay-allow <cidr>] [--drain-timeout-ms <ms>]\n\
 ctl 用法:\n\
   remote-execd ctl --control <sock> status\n\

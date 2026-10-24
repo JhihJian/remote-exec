@@ -60,6 +60,11 @@ jobs:
         env:
           INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust-release/remote-exec-linux-x64.tar.gz
         run: npm run test:rust-install
+      - name: 验证 Node listener handoff
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust-release/remote-exec-linux-x64.tar.gz
+          RUST_DAEMON: ${{ github.workspace }}/rust/target/x86_64-unknown-linux-musl/release/remote-execd
+        run: npm run test:rust-handoff
       - name: 验证架构状态
         run: node .agents/architecture-governance/check-state.mjs check --require-active
       - uses: actions/upload-artifact@v4

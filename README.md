@@ -194,8 +194,10 @@ rex 是 Rust 实现的核心操作客户端，交互会话与一次性子命令�
 ```bash
 ./rex.sh deploy root@192.168.1.101
 ./rex.sh upgrade gateway --package remote-exec-linux-x64.tar.gz
-./rex.sh migrate gateway --package remote-exec-linux-x64.tar.gz
+./rex.sh migrate gateway --package remote-exec-linux-x64.tar.gz --allow-interrupt
 ```
+
+`migrate` 的 `--allow-interrupt` 是强制维护窗口开关。当前 Node 直监听主机虽然已有隔离环境 listener handoff 原型，但尚未完成 handoff 后 supervisor 的 systemd 持久托管和无 SSH 控制面，默认仍拒绝首次迁移，以避免中断已有 WSS 和在途命令。只有完整 handoff 门禁通过后，才允许移除该维护窗口要求。
 
 发布包分别提供 `rex-linux-*` 和 `rex-ops-linux-*`。核心客户端不依赖 SSH/SFTP 库；运维扩展只在执行部署、升级或迁移时加载这些能力。
 

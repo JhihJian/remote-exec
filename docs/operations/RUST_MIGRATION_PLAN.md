@@ -102,9 +102,9 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 - 候选失败（spawn 失败、readyz 失败、TLS 失败）：保持 active 不变，清理候选目录，ctl 返回错误。
 - test/upgrade/upgrade.js 的零中断门禁由 Phase 2 交付的 Rust 升级验收套件接替（loopback 全流程 + 实机），不遗留门禁真空。
 
-### 3.4 Node→Rust 迁移路径（既有安装）
+### 3.4 Node→Rust 迁移路径（既有安装，当前仅允许明确维护窗口）
 
-一次性短暂重启，事务性步骤，全部经 SSH root 通道执行（不用 daemon exec，避免 cgroup 自杀与权限不足）：
+当前 `rex-ops migrate` 默认拒绝直接监听 Node 主机的首次迁移，必须显式提供 `--allow-interrupt`。该参数只代表操作者已确认维护窗口，不代表迁移无中断。当前已实现隔离环境的 Node listener handoff 原型：Node 将监听 FD 交给 Rust supervisor，旧 WSS 保留，新连接进入 Rust；但 systemd 对 handoff 后 supervisor 的持久托管、失败回滚和无 SSH 运维控制面仍未闭合，因此尚未获得生产迁移资格。
 
 1. **预检**：读取既有 unit 的 ExecStart，解析 `--host/--port/--relay-allow/--cert/--key/--token-sha256-file` 与运行用户；解析失败或参数无法映射时拒绝迁移。
 2. **并置安装**：安装 Rust versions 布局、supervisor unit（保持解析出的端口/relay-allow/凭据路径/运行用户）、state 文件；此阶段不触碰 Node 服务，任何失败零影响。
@@ -112,7 +112,7 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 4. **验收**：用既有 CA/token 走真实 TLS+WSS+命令验收（客户端配置零改动，凭据不动）。
 5. **回滚**：`systemctl stop remote-exec-supervisor && systemctl start <旧unit>`；Node 目录与 unit 全程未动。
 
-中断窗口为服务重启时长，文档如实标注；Rust↔Rust 升级才是无中断路径。
+中断窗口为服务重启时长，文档如实标注；Rust↔Rust 升级才是无中断路径。严格零中断要求下，直接监听 Node 的主机必须冻结，直到 listener handoff、handoff 后 supervisor 持久托管和无 SSH 控制面完成。
 
 ### 3.5 安全边界（不变项与修正）
 
@@ -159,8 +159,10 @@ Pi extension 保持 TypeScript 与现有工具面，属于 Pi 宿主适配层，
 
 进度（2026-10-23）：全部交付。`scripts/build-rust-release.sh`（双架构 musl、readelf 静态校验、确定性 tar、daemon 门禁严格小于 2MB、THIRD_PARTY_LICENSES、manifest）；体积门禁实测：daemon x64 1,852,145 / arm64 1,761,117 字节，rex x64 2,062,749 / arm64 1,966,229 字节。`rust/packaging/install.sh` 正式安装器（preflight OS 矩阵 Ubuntu 22.04/24.04+Debian 12 双架构+openEuler 22.03 aarch64、flock、curl 续传、幂等同版本重装、异版本拒绝、凭据保留、release.json 布局标记、Node 布局检测引导 rex-ops migrate）；x64 docker privileged 隔离验收与 arm64 qemu binfmt（multiarch/qemu-user-static + debian12 镜像）离线安装验收均通过（supervisor 接管、ctl generation、CA 验收 exec）。`rex-ops migrate`/`--rollback`：预检（Node install.json 布局、Rust 布局不存在、凭据在位、runUser 白名单）→并置安装（不影响运行中 Node）→单命令交接（失败自动恢复）→旧凭据验收；rollback 完整恢复 Node 并清理全部 Rust 资产后可重入迁移。隔离 E2E `test/rust-prototype/phase4b.js` 6 项通过；phase2/3a/3b/4a/runner/drain 回归全绿；ctl upgrade 对同 id 重放幂等（`.package-sha256` 标记）。实机演练（2026-10-23）：MACO → xiaomi（EasyTier 10.144.144.4，Debian 12 privileged 容器，Node install.sh 标准布局 8795）完成 rex-ops migrate → rollback → 再 migrate → rex-ops upgrade 零中断全链路，全程旧凭据可用，旧 generation 回收，演练后清理。兼容性备注：Node 布局仅 x64（捆绑 x86_64 node runtime），openEuler 实机无法首装 Node 布局，Phase 5 对裸 nohup/openEuler 机器用 rex-ops deploy 直接装 Rust 正式布局（不需要 migrate，migrate 仅服务 install.json 标准布局）；upgrade 对迁移主机 backend-ca 自动兼容自签叶子（pin）与正式 CA。
 
+当前新增隔离门禁 `test/rust-prototype/node-handoff.js`：验证已有 Node WSS 长请求在 listener handoff 后完整返回，新连接进入 Rust。该测试只证明 socket 交接原型，不代表已具备生产 systemd 托管和批量迁移资格。
+
 ### Phase 5：切换与退役
-范围：生产机群迁移（顺序：xiaomi → nm24/21/22/23 平移 → nm101/108/109 → QC71/101/194/195 → nm105 网关最后 → HG1）；文档/架构治理状态同步；Node 代码作为回滚资产；发布流程已切换到 Rust，等待生产机群完成观察期后退役旧代码。
+范围：生产机群迁移（顺序：xiaomi → nm24/21/22/23 平移 → nm101/108/109 → QC71/101/194/195 → nm105 网关最后 → HG1）；文档/架构治理状态同步；Node 代码作为回滚资产；发布流程已切换到 Rust，等待 handoff 持久托管、无 SSH 控制面和生产观察窗口完成后退役旧代码。
 退出条件：全部生产实例运行 Rust 且日常操作无回归；至少一次生产 Node 回滚演练可用；Pi extension 终验通过；Node 不在任何生产路径；文档与治理状态一致。
 
 ## 5. Node 代码处置

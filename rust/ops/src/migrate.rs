@@ -23,9 +23,9 @@ use remote_exec_rex::config::Store;
 use remote_exec_ssh::{self as ssh, Target as SshTarget};
 use std::time::Duration;
 
-const HELP: &str = "用法: rex-ops migrate <主机> --package <tar.gz> [--ssh-user root] [--ssh-port 22] \
-[--identity 私钥] [--host-key 指纹]\n       rex-ops migrate <主机> --rollback [--ssh-user root] \
-[--ssh-port 22] [--identity 私钥] [--host-key 指纹]";
+const HELP: &str = "用法: rex-ops migrate <主机> --package <tar.gz> --allow-interrupt [--ssh-user root] [--ssh-port 22] \
+[--identity 私钥] [--host-key 指纹]\n       rex-ops migrate <主机> --rollback --allow-interrupt [--ssh-user root] \
+[--ssh-port 22] [--identity 私钥] [--host-key 指纹]\n\n说明：当前 Node 直监听主机的首次迁移会中断已有连接。未实现 listener handoff 前，生产路径必须拒绝迁移。";
 
 /// Node 布局参数：install.json 中的端口与运行用户。
 struct NodeLayout {
@@ -333,6 +333,7 @@ echo 'Node 服务端口未就绪' >&2; exit 1",
 pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
     let mut package = String::new();
     let mut rollback = false;
+    let mut allow_interrupt = false;
     let parsed = parse_ssh_args(args, HELP, "迁移", |flag, index| {
         match flag {
             "--package" => {
@@ -340,6 +341,7 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
                 *index += 1;
             }
             "--rollback" => rollback = true,
+            "--allow-interrupt" => allow_interrupt = true,
             other => return Err(format!("未知参数: {other}")),
         }
         Ok(())
@@ -349,6 +351,11 @@ pub async fn run(store: &Store, args: &[String]) -> Result<i32, String> {
         return Err(format!(
             "\"{}\" 经网关中转，SSH 不可直连；网关主机迁移属 Phase 5",
             parsed.host
+        ));
+    }
+    if !allow_interrupt {
+        return Err(format!(
+            "拒绝执行 Node→Rust 首次迁移：当前路径可能中断已有 WSS 和在途命令；先完成 listener handoff，或明确使用 --allow-interrupt 进入维护窗口\n{HELP}"
         ));
     }
     if package.is_empty() && !rollback {

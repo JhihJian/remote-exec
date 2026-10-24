@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 "use strict";
 
+const path = require("node:path");
+const fs = require("node:fs");
+const { handoff } = require("./handoff.js");
 const { DEFAULT_RELAY_ALLOW } = require("./shared/constants.js");
 const { createServer } = require("./transport/http-server.js");
 const { createLifecycle } = require("./lifecycle.js");
@@ -24,6 +27,7 @@ function parseArgs(argv) {
     else if (a === "--relay-allow") (opts.relayAllow = opts.relayAllow || []).push(next());
     else if (a === "--generation") opts.generation = next();
     else if (a === "--drain-timeout-ms") opts.drainTimeoutMs = Number(next());
+    else if (a === "--handoff-config") opts.handoffConfig = next();
     else if (a === "-h" || a === "--help") opts.help = true;
     else throw new Error(`未知参数: ${a}`);
   }
@@ -73,6 +77,18 @@ function main(argv = process.argv.slice(2)) {
   };
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
+  let handoffInProgress = false;
+  const handoffPath = opts.handoffConfig
+    || process.env.REMOTE_EXEC_HANDOFF_CONFIG
+    || path.join(path.dirname(path.resolve(opts.tokenSha256File)), "handoff.json");
+  process.once("SIGUSR2", () => {
+    if (handoffInProgress) return;
+    handoffInProgress = true;
+    fs.promises.readFile(handoffPath, "utf8")
+      .then((text) => handoff(server, JSON.parse(text), log))
+      .catch((error) => log("handoff.failed", String(error.message || error)))
+      .finally(() => { handoffInProgress = false; });
+  });
   return server;
 }
 

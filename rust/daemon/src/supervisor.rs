@@ -5,7 +5,10 @@ use std::{
     ffi::CString,
     io,
     net::IpAddr,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::{
+        fd::FromRawFd,
+        unix::fs::{OpenOptionsExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -1146,6 +1149,7 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     let mut old_host = None;
     let mut old_port = None;
     let mut run_user = None;
+    let mut listener_fd = None;
     let mut index = 0;
     while index < args.len() {
         let value = args.get(index + 1).ok_or("supervisor 参数缺少值")?;
@@ -1157,6 +1161,7 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
             "--old-host" => old_host = Some(value.clone()),
             "--old-port" => old_port = Some(value.parse::<u16>()?),
             "--run-user" => run_user = Some(value.clone()),
+            "--listener-fd" => listener_fd = Some(value.parse::<i32>()?),
             _ => return Err(format!("未知 supervisor 参数: {}", args[index]).into()),
         }
         index += 2;
@@ -1217,7 +1222,17 @@ pub async fn run(args: &[String]) -> Result<(), crate::AnyError> {
     if control_path.exists() {
         tokio::fs::remove_file(&control_path).await?;
     }
-    let external = TcpListener::bind((host.as_str(), port)).await?;
+    let external = if let Some(fd) = listener_fd {
+        if fd < 0 {
+            return Err("--listener-fd 必须是非负整数".into());
+        }
+        // FD 由启动方显式传入。from_raw_fd 接管其所有权，supervisor 退出时关闭副本。
+        let listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+        listener.set_nonblocking(true)?;
+        TcpListener::from_std(listener)?
+    } else {
+        TcpListener::bind((host.as_str(), port)).await?
+    };
     let control_listener = UnixListener::bind(&control_path)?;
     tokio::fs::set_permissions(&control_path, std::fs::Permissions::from_mode(0o600)).await?;
     eprintln!("Rust supervisor listening {}", external.local_addr()?);

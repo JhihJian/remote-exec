@@ -316,6 +316,10 @@ pub async fn call_task_host(
             }
             Ok(Err(error))
                 if !error.starts_with("rpc ") && std::time::Instant::now() < deadline => {}
+            Ok(Err(error)) if !started && error.contains("未知方法: exec.start") => {
+                // 旧 Node daemon 没有独立任务接口，回退到兼容的单次 exec。
+                return call_host(store, host_name, call, None, interrupt).await;
+            }
             Ok(Err(error)) => return Err(error),
             Err(_) if std::time::Instant::now() < deadline => {}
             Err(_) => return Err(format!("任务 RPC 等待超时，taskId={task_id}")),

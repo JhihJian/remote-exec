@@ -56,6 +56,12 @@ jobs:
           INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust/remote-exec-linux-x64.tar.gz
         run: npm run test:rust-install
 
+      - name: Verify Node listener handoff
+        env:
+          INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust/remote-exec-linux-x64.tar.gz
+          RUST_DAEMON: ${{ github.workspace }}/rust/target/x86_64-unknown-linux-musl/release/remote-execd
+        run: npm run test:rust-handoff
+
       - name: Verify Rust direct deployment and zero-downtime upgrade
         env:
           INSTALL_PACKAGE: ${{ github.workspace }}/dist/rust/remote-exec-linux-x64.tar.gz

@@ -105,7 +105,7 @@ relay 请求会让远程操作层连接另一台机器上的 daemon，再把命�
 
 Rust 正式实现交付 TLS/WSS 命令、文件服务、HTTPS 大文件传输、受白名单限制的单跳 relay、daemon 排空、supervisor 状态机和 ctl 两段式升级；使用 x86_64 或 ARM64 的 musl 构建正式服务器包，并由 `rust/packaging/install.sh` 安装。Rust 客户端拆为核心 `rex` 与运维扩展 `rex-ops`：`rex` 复用现有 `~/.config/remote-exec/hosts.json`，提供 exec/read/write/upload/download/smoke、hosts 探测和 readline 操作；`rex-ops` 承载 SSH 部署、升级和迁移。`rex.sh` 根据子命令在两个二进制之间路由，核心客户端不加载 SSH/SFTP 依赖。
 
-Rust 正式实现保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和 systemd（离线包安装），安装脚本使用常见系统工具；root 安装创建 supervisor 管理的 generation 服务。Rust daemon 的 SIGTERM 进入排空，既有请求完成后退出，排空超时强制关闭连接。Node→Rust migrate 负责既有 Node 标准布局的并置安装、交接和回滚。
+Rust 正式实现保留持有 token 即取得运行用户权限的边界，沿用现有客户端协议并执行系统 `bash -lc`。目标机需要 Linux x86_64 或 ARM64、Bash 和 systemd（离线包安装），安装脚本使用常见系统工具；root 安装创建 supervisor 管理的 generation 服务。Rust daemon 的 SIGTERM 进入排空，既有请求完成后退出，排空超时强制关闭连接。Node→Rust listener handoff 已有隔离原型，可将 Node listener FD 交给 supervisor 并保持既有连接；生产迁移仍需补齐 handoff 后的 systemd 持久托管、无 SSH 控制面和真实主机回滚门禁。
 
 Rust 图中调用向下委托，同层协作由明确连线表达。Rust 是正式运行时，Node 图和代码属于迁移期回滚基线。模块映射如下：
 
@@ -120,7 +120,7 @@ Rust 图中调用向下委托，同层协作由明确连线表达。Rust 是正�
 | Rust token 校验 | 哈希加载、Bearer 校验 | `rust/daemon/src/auth.rs` |
 | Rust 生命周期协调 | 就绪状态、资源计数、排空和强制关闭通知 | `rust/daemon/src/lifecycle.rs` |
 | Rust relay 操作 | 单跳白名单、目标 TLS、阶段化错误和总超时 | `rust/daemon/src/relay.rs` |
-| Rust supervisor 核心 | 状态持久化、重启恢复、降权 spawn、同 uid 控制面和 generation 切换 | `rust/daemon/src/supervisor.rs`、`rust/daemon/src/ctl.rs` |
+| Rust supervisor 核心 | 状态持久化、重启恢复、降权 spawn、同 uid 控制面和 generation 切换；支持从既有 Node listener FD 启动的 handoff 原型 | `rust/daemon/src/supervisor.rs`、`rust/daemon/src/ctl.rs`、`src/daemon/handoff.js` |
 | Rust 核心客户端 rex | hosts.json/credentials 互操作、WSS 直连与 relay 信封、HTTP 流式传输、smoke、readline 交互 | `rust/rex/src/`（lib.rs、config.rs、client.rs、http.rs、smoke.rs、ui.rs、main.rs） |
 | Rust 运维扩展 rex-ops | SSH 部署、发布包处理、升级编排和 Node→Rust 迁移 | `rust/ops/src/main.rs`、`rust/ops/src/{bundle,deploy,migrate,prompt,upgrade}.rs`，调用核心 `remote-exec-rex` API |
 
@@ -141,7 +141,7 @@ Rust 图中调用向下委托，同层协作由明确连线表达。Rust 是正�
 
 ## 稳定边界
 
-daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器；固定入口 supervisor 通过原始 TCP 将新连接分配到 active generation。
+daemon generation 通过 HTTP(S) 入口执行健康检查和经 Bearer token 鉴权的 HTTP 文件传输，并把经鉴权的 WebSocket 升级交给 RPC 服务器；固定入口 supervisor 通过原始 TCP 将新连接分配到 active generation。Node→Rust listener handoff 原型可从 Node listener FD 启动 supervisor，已有连接继续由 Node 处理；systemd 持久托管和无 SSH 控制面仍是生产迁移前置条件。
 
 
 

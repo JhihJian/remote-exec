@@ -1,6 +1,7 @@
-//! HTTP 流式上传/下载（仅直连主机），走 daemon 的 /upload /download。
+//! HTTP 流式上传/下载，走 daemon 的 /upload /download；经单跳网关下载走 /relay-download。
 use crate::config::HostEntry;
 use futures_util::StreamExt;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
@@ -103,6 +104,46 @@ pub async fn download(
         let text = response.text().await.unwrap_or_default();
         return Err(format!("HTTP 失败: {status} {text}"));
     }
+    write_response(response, local).await
+}
+
+/// 经单跳网关下载目标 daemon 的文件，网关只代理字节流，不落盘。
+pub async fn download_via(
+    gateway: &HostEntry,
+    gateway_ca_pem: &str,
+    gateway_token: &str,
+    target: &HostEntry,
+    target_ca_pem: &str,
+    target_token: &str,
+    remote: &str,
+    local: &Path,
+) -> Result<Transfer, String> {
+    let client = client(gateway, gateway_ca_pem)?;
+    let body = json!({
+        "target": { "host": target.host, "port": target.port, "servername": target.servername.as_deref().unwrap_or(&target.host) },
+        "auth": { "token": target_token, "ca": target_ca_pem },
+        "file": remote,
+    });
+    let response = client
+        .post(format!("{}relay-download", base_url(gateway)))
+        .header("Authorization", format!("Bearer {gateway_token}"))
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| format!("经网关下载失败: {e}"))?;
+    if std::env::var("REX_DEBUG").is_ok() {
+        eprintln!("[rex] POST relay-download → {}", response.status());
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("HTTP 失败: {status} {text}"));
+    }
+    write_response(response, local).await
+}
+
+async fn write_response(response: reqwest::Response, local: &Path) -> Result<Transfer, String> {
     let temp = temp_sibling(local);
     let mut file = tokio::fs::File::create(&temp)
         .await

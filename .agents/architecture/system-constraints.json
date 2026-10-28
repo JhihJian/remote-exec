@@ -120,7 +120,7 @@
     {
       "id": "SC-LARGE-FILE-TRANSFER-001",
       "status": "active",
-      "rule": "对持有有效 token 的直连 HTTPS 请求，系统以流式方式上传或下载绝对路径文件，并交付传输大小与 SHA-256 一致性结果。",
+      "rule": "对持有有效 token 的直连上传/下载或单跳网关下载请求，系统以流式方式传输绝对路径文件，并交付传输大小与 SHA-256 一致性结果。网关下载不经 RPC 或 Base64。",
       "document": {
         "path": "docs/architecture/ARCHITECTURE.md",
         "anchor": "传输大文件"
@@ -135,6 +135,14 @@
         {
           "path": "src/daemon/transport/file-transfer.js",
           "locator": "function handleUpload(req, res)"
+        },
+        {
+          "path": "src/daemon/transport/relay-download.js",
+          "locator": "const upstream = https.request({"
+        },
+        {
+          "path": "test/integration/relay-download.js",
+          "locator": "assert.deepEqual(success.body, content)"
         },
         {
           "path": "src/daemon/transport/file-transfer.js",
@@ -154,14 +162,14 @@
           }
         },
         {
-          "id": "BC-LARGE-FILE-TRANSFER-001-AUTH",
+          "id": "BC-LARGE-FILE-TRANSFER-001-RELAY",
           "kind": "variant",
-          "rule": "上传请求缺少有效 token 时，系统拒绝请求并返回 HTTP 401。",
-          "outcome": "未认证调用方不能写入远程文件。",
+          "rule": "经单跳网关下载时，网关连接白名单内目标并透传目标 `/download` 字节流；目标认证、证书或路径失败时，调用方得到失败状态且本地不保留半成品。",
+          "outcome": "调用方获得可由 SHA-256 验证的目标文件副本，且网关不经 RPC/Base64 搬运文件。",
           "test": {
-            "path": "test/integration/client.js",
-            "locator": "await test(\"上传无 token 被 401 拒绝\"",
-            "oracle": "未携带 token 的上传请求返回 HTTP 401。"
+            "path": "test/integration/relay-download.js",
+            "locator": "assert.deepEqual(success.body, content)",
+            "oracle": "网关返回 HTTP 200 且响应字节与目标文件完全一致；无网关 token 请求返回 HTTP 401。"
           }
         }
       ]

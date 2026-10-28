@@ -5,6 +5,7 @@ const https = require("https");
 const fs = require("fs");
 const { HTTP_IDLE_TIMEOUT_MS } = require("../shared/constants.js");
 const { handleDownload, handleUpload } = require("./file-transfer.js");
+const { handleRelayDownload } = require("./relay-download.js");
 const { checkToken } = require("../shared/auth.js");
 const { log } = require("../shared/log.js");
 const { createRpcServer } = require("./rpc-server.js");
@@ -23,9 +24,10 @@ function createServer(opts, tokenSha256) {
       res.end(ready ? "ok\n" : "draining\n");
       return;
     }
+    const isRelayDownload = req.method === "POST" && req.url === "/relay-download";
     const isUpload = req.method === "POST" && req.url.startsWith("/upload");
     const isDownload = req.method === "GET" && req.url.startsWith("/download");
-    if (isUpload || isDownload) {
+    if (isRelayDownload || isUpload || isDownload) {
       if (!checkToken(tokenSha256, req.headers)) {
         res.writeHead(401, { "Content-Type": "text/plain" });
         res.end("unauthorized\n");
@@ -48,7 +50,8 @@ function createServer(opts, tokenSha256) {
       res.once("close", finish);
       req.once("aborted", finish);
       req.setTimeout(HTTP_IDLE_TIMEOUT_MS);
-      if (isUpload) handleUpload(req, res);
+      if (isRelayDownload) handleRelayDownload(req, res, opts.relayAllow);
+      else if (isUpload) handleUpload(req, res);
       else handleDownload(req, res);
       return;
     }

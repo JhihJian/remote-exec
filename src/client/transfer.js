@@ -10,13 +10,16 @@ function httpOp(hostName, op, localFile, remoteFile, { signal } = {}) {
     const config = loadConfig();
     const host = config.hosts[hostName];
     if (!host) throw new Error(`未知主机 "${hostName}"`);
-    if (host.via) throw new Error(`"${hostName}" 经网关中转，暂不支持流式传输`);
-    const token = fs.readFileSync(host.tokenFile, "utf8").trim();
-    const servername = /^\d+\.\d+\.\d+\.\d+$/.test(host.servername || host.host)
-      ? undefined : (host.servername || host.host);
+    if (host.via && op === "upload") throw new Error(`"${hostName}" 经网关中转，暂不支持流式上传`);
+    const gateway = host.via ? config.hosts[host.via] : null;
+    if (host.via && (!gateway || gateway.via)) throw new Error(`"${hostName}" 的 via 链配置无效`);
+    const route = gateway || host;
+    const token = fs.readFileSync(route.tokenFile, "utf8").trim();
+    const servername = /^\d+\.\d+\.\d+\.\d+$/.test(route.servername || route.host)
+      ? undefined : (route.servername || route.host);
     const options = {
-      host: host.host,
-      port: host.port,
+      host: route.host,
+      port: route.port,
       servername,
       ca: host.ca ? fs.readFileSync(host.ca) : undefined,
       rejectUnauthorized: true,
@@ -43,7 +46,19 @@ function httpOp(hostName, op, localFile, remoteFile, { signal } = {}) {
       });
     } else {
       request = tls.connect(options, () => {
-        request.write(`GET /download?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer ${token}\r\nConnection: close\r\n\r\n`);
+        if (!gateway) {
+          request.write(`GET /download?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer ${token}\r\nConnection: close\r\n\r\n`);
+          return;
+        }
+        const body = JSON.stringify({
+          target: { host: host.host, port: host.port, servername: host.servername || host.host },
+          auth: { token: fs.readFileSync(host.tokenFile, "utf8").trim(), ca: fs.readFileSync(host.ca, "utf8") },
+          file: remoteFile,
+        });
+        request.write(
+          `POST /relay-download HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n` +
+          `Authorization: Bearer ${token}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+        );
       });
     }
     request.setTimeout(30000, () => finish(new Error("文件传输连接停滞超时")));

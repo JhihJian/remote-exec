@@ -1,4 +1,5 @@
 use crate::{AnyError, auth, files, rpc};
+use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
 use hyper::{
     Request, Response, StatusCode,
@@ -134,6 +135,122 @@ async fn download(
         .body(StreamBody::new(stream).boxed_unsync())?)
 }
 
+const MAX_RELAY_DOWNLOAD_REQUEST: usize = 128 * 1024;
+
+fn encode_query(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                output.push(byte as char)
+            }
+            _ => output.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    output
+}
+
+async fn relay_download(
+    mut req: Request<Incoming>,
+    relay_allow: &[String],
+    guard: crate::lifecycle::Guard,
+) -> Result<Response<Body>, AnyError> {
+    let mut body = Vec::new();
+    while let Some(frame) = req.body_mut().frame().await {
+        let frame = frame?;
+        if let Ok(data) = frame.into_data() {
+            if body.len() + data.len() > MAX_RELAY_DOWNLOAD_REQUEST {
+                return Err("relay-download 请求体过大".into());
+            }
+            body.extend_from_slice(&data);
+        }
+    }
+    let value: serde_json::Value = serde_json::from_slice(&body)?;
+    let target = value.get("target").ok_or("缺少 target")?;
+    let auth = value.get("auth").ok_or("缺少 auth")?;
+    let host = target
+        .get("host")
+        .and_then(|v| v.as_str())
+        .ok_or("target.host 必须是 IPv4 字面量")?;
+    let ip = host
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| "target.host 必须是 IPv4 字面量")?;
+    if !crate::relay::target_allowed(ip, relay_allow) {
+        return Err(format!("目标 {host} 不在 relay 白名单内").into());
+    }
+    let port = target
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .filter(|v| (1..=65535).contains(v))
+        .ok_or("target.port 必须是 1..65535 的整数")?;
+    let servername = target
+        .get("servername")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty() && !v.contains('/') && !v.contains(':'))
+        .unwrap_or(host);
+    let token = auth
+        .get("token")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .ok_or("auth.token 不能为空")?;
+    let ca = auth
+        .get("ca")
+        .and_then(|v| v.as_str())
+        .filter(|v| v.contains("BEGIN CERTIFICATE"))
+        .ok_or("auth.ca 必须是目标 CA 的 PEM 文本")?;
+    let file = value
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or("缺少 file")?;
+    files::absolute(Some(file)).map_err(|e| e.message)?;
+    let certificate = reqwest::Certificate::from_pem(ca.as_bytes())?;
+    let target_addr = format!("{host}:{port}")
+        .parse()
+        .map_err(|_| "目标地址无效")?;
+    let client = reqwest::Client::builder()
+        .add_root_certificate(certificate)
+        .resolve(servername, target_addr)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30 * 60))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client
+        .get(format!(
+            "https://{servername}:{port}/download?path={}",
+            encode_query(file)
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await?;
+    let status = StatusCode::from_u16(response.status().as_u16())?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let content_length = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let stream = response
+        .bytes_stream()
+        .map_err(|e| -> AnyError { Box::new(e) })
+        .map_ok(Frame::data)
+        .map(move |item| {
+            let _keep_alive = &guard;
+            item
+        });
+    let mut builder = Response::builder()
+        .status(status)
+        .header("content-type", content_type);
+    if let Some(content_length) = content_length {
+        builder = builder.header("content-length", content_length);
+    }
+    Ok(builder.body(StreamBody::new(stream).boxed_unsync())?)
+}
+
 pub async fn serve<S>(
     socket: S,
     hash: [u8; 32],
@@ -146,9 +263,11 @@ pub async fn serve<S>(
     let (upgrade_tx, upgrade_rx) = tokio::sync::oneshot::channel();
     let upgrade_tx = Arc::new(Mutex::new(Some(upgrade_tx)));
     let lifecycle_for_session = lifecycle.clone();
+    let relay_allow_for_http = relay_allow.clone();
     let service = service_fn(move |mut req: Request<Incoming>| {
         let upgrade_tx = upgrade_tx.clone();
         let lifecycle = lifecycle.clone();
+        let relay_allow = relay_allow_for_http.clone();
         async move {
             let result = if req.headers().contains_key("upgrade") {
                 if !lifecycle.accepting() {
@@ -214,7 +333,7 @@ pub async fn serve<S>(
                             response(StatusCode::SERVICE_UNAVAILABLE, "draining\n", "text/plain")
                         }
                     }
-                    ("POST", "/upload") | ("GET", "/download") => {
+                    ("POST", "/relay-download") | ("POST", "/upload") | ("GET", "/download") => {
                         if !auth::authorized(req.headers(), &hash) {
                             error(StatusCode::UNAUTHORIZED, "unauthorized")
                         } else {
@@ -224,27 +343,37 @@ pub async fn serve<S>(
                                     "draining\n",
                                     "text/plain",
                                 ),
-                                Some(guard) => match query_path(&req) {
-                                    Err(e) => error(StatusCode::BAD_REQUEST, e),
-                                    Ok(path) => {
-                                        let is_upload = req.method() == hyper::Method::POST;
-                                        let result = if is_upload {
-                                            upload(req, std::path::Path::new(&path), guard).await
-                                        } else {
-                                            download(std::path::Path::new(&path), guard).await
-                                        };
-                                        result.unwrap_or_else(|e| {
-                                            error(
-                                                if is_upload {
-                                                    StatusCode::INTERNAL_SERVER_ERROR
+                                Some(guard) => {
+                                    if req.uri().path() == "/relay-download" {
+                                        relay_download(req, &relay_allow, guard)
+                                            .await
+                                            .unwrap_or_else(|e| error(StatusCode::BAD_GATEWAY, e))
+                                    } else {
+                                        match query_path(&req) {
+                                            Err(e) => error(StatusCode::BAD_REQUEST, e),
+                                            Ok(path) => {
+                                                let is_upload = req.method() == hyper::Method::POST;
+                                                let result = if is_upload {
+                                                    upload(req, std::path::Path::new(&path), guard)
+                                                        .await
                                                 } else {
-                                                    StatusCode::NOT_FOUND
-                                                },
-                                                e,
-                                            )
-                                        })
+                                                    download(std::path::Path::new(&path), guard)
+                                                        .await
+                                                };
+                                                result.unwrap_or_else(|e| {
+                                                    error(
+                                                        if is_upload {
+                                                            StatusCode::INTERNAL_SERVER_ERROR
+                                                        } else {
+                                                            StatusCode::NOT_FOUND
+                                                        },
+                                                        e,
+                                                    )
+                                                })
+                                            }
+                                        }
                                     }
-                                },
+                                }
                             }
                         }
                     }

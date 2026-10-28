@@ -172,7 +172,7 @@ WebSocket 连接使用 JSON-RPC 风格消息：
 - 超时退出码为 `124`。
 - `exec.stream` 以 16KB 分片发送输出，发送停滞 30 秒后终止命令。
 - WebSocket 单帧上限为 64MB。
-- HTTP `/upload` 和 `/download` 只支持直连 daemon，不经 relay 转发。
+- HTTP `/upload` 和 `/download` 支持直连 daemon；经 relay 下载时，客户端通过网关的 `/relay-download` 代理保持字节流，不把文件放进 RPC 或 LLM 上下文。
 
 ## 客户端
 
@@ -306,7 +306,7 @@ relay 的默认约束：
 - 内层只允许 `exec`、`exec.stream`、`exec.start`、`exec.status`、`exec.log`、`exec.cancel`、`exec.forget`、`file.read` 和 `file.write`。
 - 目标 token 和 CA 随请求传递，网关不落盘。
 - 单网关 relay 并发上限为 8，连接预算和内层超时均有上限。
-- `via` 只支持一层，上传和下载需要直连目标主机。
+- `via` 只支持一层；上传仍需要直连目标主机，下载由网关代理目标 `/download` 的字节流。
 
 ### TCP supervisor
 

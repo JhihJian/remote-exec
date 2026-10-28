@@ -459,18 +459,38 @@ function httpUpload(host: HostConfig, token: string, localFile: string, remoteFi
 }
 
 /** 流式下载大文件：HTTP 端点，内存 O(1)，sha256 校验 */
-function httpDownload(host: HostConfig, token: string, remoteFile: string, localFile: string): Promise<string> {
+function httpDownload(
+	host: HostConfig,
+	token: string,
+	remoteFile: string,
+	localFile: string,
+	gateway?: { host: HostConfig; token: string },
+): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const hash = crypto.createHash("sha256");
 		fs.mkdirSync(path.dirname(localFile), { recursive: true });
 		const out = fs.createWriteStream(localFile);
 		const t0 = Date.now();
+		const route = gateway || { host, token };
 		const req = tls.connect(
-			{ host: host.host, port: host.port, servername: host.servername || host.host, ca: fs.readFileSync(host.ca), rejectUnauthorized: true },
+			{ host: route.host.host, port: route.host.port, servername: route.host.servername || route.host.host, ca: fs.readFileSync(route.host.ca), rejectUnauthorized: true },
 			() => {
-				req.write(
-					`GET /download?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\n` +
+				if (!gateway) {
+					req.write(
+						`GET /download?path=${encodeURIComponent(remoteFile)} HTTP/1.1\r\nHost: h\r\n` +
 						`Authorization: Bearer ${token}\r\nConnection: close\r\n\r\n`,
+					);
+					return;
+				}
+				const body = JSON.stringify({
+					target: { host: host.host, port: host.port, servername: host.servername || host.host },
+					auth: { token, ca: fs.readFileSync(host.ca, "utf8") },
+					file: remoteFile,
+				});
+				req.write(
+					`POST /relay-download HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n` +
+					`Authorization: Bearer ${route.token}\r\nContent-Length: ${Buffer.byteLength(body)}\r\n` +
+					`Connection: close\r\n\r\n${body}`,
 				);
 			},
 		);
@@ -738,8 +758,15 @@ export default function remoteExecExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params) {
 			const { host, token } = resolveHost(params.host);
-			if (host.via) throw new Error(`"${params.host}" 经网关 "${host.via}" 中转，暂不支持流式下载。可先下载到网关再从网关拉取，或用 ssh -L 临时隧道`);
-			const text = await httpDownload(host, token, params.remoteFile, params.localFile);
+			let gateway: { host: HostConfig; token: string } | undefined;
+			if (host.via) {
+				const config = loadConfig();
+				const gatewayHost = config?.hosts[host.via];
+				if (!gatewayHost) throw new Error(`主机 "${params.host}" 的 via 网关 "${host.via}" 不在配置中`);
+				if (gatewayHost.via) throw new Error("via 链深度仅支持 1，不支持链式转发");
+				gateway = { host: gatewayHost, token: fs.readFileSync(gatewayHost.tokenFile, "utf8").trim() };
+			}
+			const text = await httpDownload(host, token, params.remoteFile, params.localFile, gateway);
 			return { content: [{ type: "text", text }], details: { host: params.host, remoteFile: params.remoteFile } };
 		},
 		renderCall(args, theme) {
@@ -773,7 +800,7 @@ ${lines.join("\n")}
 - 远程路径必须是绝对路径
 - 命令在远程 bash -lc 下执行，不支持交互式输入
 - 读写文件优先用 remote_read / remote_write，其余操作用 remote_bash
-- 大文件（部署包、备份、数据集等）传输用 remote_upload / remote_download，不走 base64 通道；标注"经网关转发"的主机暂不支持流式传输
+- 大文件（部署包、备份、数据集等）传输用 remote_upload / remote_download，不走 base64 通道；经网关转发的主机支持 remote_download，remote_upload 仍需直连
 `;
 		return { systemPrompt: `${event.systemPrompt}${section}` };
 	});

@@ -9,7 +9,7 @@ pub const HELP: &str = "用法: rex [主机名]                交互式会话�
   rex read <主机> <绝对路径>        读取远端文件到 stdout（≤64MB）
   rex write <主机> <绝对路径>       从 stdin 写入远端文件（≤64MB）
   rex upload <主机> <本地> <远端>   流式上传（仅直连主机）
-  rex download <主机> <远端> <本地> 流式下载（仅直连主机）
+  rex download <主机> <远端> <本地> 流式下载（支持单跳网关）
   rex smoke --port N --ca <pem> --token-file <f> [--expected-user 用户] [--host 地址]
                                    安装验收（readyz + WSS exec）
   运维命令由独立 rex-ops 扩展提供：deploy、upgrade、migrate";
@@ -234,8 +234,8 @@ async fn transfer(store: &Store, args: &[String], direction: Direction) -> Resul
         }
     };
     let entry = store.host(&host).map_err(|e| e.to_string())?;
-    if entry.via.is_some() {
-        return Err(format!("\"{host}\" 经网关中转，暂不支持流式传输"));
+    if matches!(&direction, Direction::Write) && entry.via.is_some() {
+        return Err(format!("\"{host}\" 经网关中转，暂不支持流式上传"));
     }
     let token = std::fs::read_to_string(&entry.token_file)
         .map_err(|e| format!("读取 token 失败: {e}"))?
@@ -254,14 +254,37 @@ async fn transfer(store: &Store, args: &[String], direction: Direction) -> Resul
             .await?
         }
         Direction::Read => {
-            http::download(
-                &entry,
-                &ca_pem,
-                &token,
-                &remote,
-                std::path::Path::new(&local),
-            )
-            .await?
+            if let Some(via) = entry.via.as_deref() {
+                let gateway = store.host(via).map_err(|e| e.to_string())?;
+                if gateway.via.is_some() {
+                    return Err(format!("\"{host}\" 的 via 链深度仅支持 1"));
+                }
+                let gateway_token = std::fs::read_to_string(&gateway.token_file)
+                    .map_err(|e| format!("读取网关 token 失败: {e}"))?
+                    .trim()
+                    .to_owned();
+                let gateway_ca = std::fs::read_to_string(&gateway.ca).map_err(|e| e.to_string())?;
+                http::download_via(
+                    &gateway,
+                    &gateway_ca,
+                    &gateway_token,
+                    &entry,
+                    &ca_pem,
+                    &token,
+                    &remote,
+                    std::path::Path::new(&local),
+                )
+                .await?
+            } else {
+                http::download(
+                    &entry,
+                    &ca_pem,
+                    &token,
+                    &remote,
+                    std::path::Path::new(&local),
+                )
+                .await?
+            }
         }
     };
     println!("{} 字节 sha256={}", result.size, result.sha256);

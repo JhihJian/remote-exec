@@ -1739,6 +1739,7 @@ dependencies = [
  "rand 0.9.5",
  "remote-exec-ssh",
  "remote-exec-tls",
+ "reqwest",
  "rustls-pemfile",
  "rustls-webpki",
  "serde_json",

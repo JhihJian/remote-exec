@@ -90,7 +90,7 @@
     },
     {
       "id": "file-transport-boundary",
-      "conclusion": "文件 RPC 只接受绝对路径。大文件经 `/upload` 与 `/download` 的 HTTPS 流式端点传输，两个端点只支持直连 daemon，不经 relay。",
+      "conclusion": "文件 RPC 只接受绝对路径。大文件经 `/upload` 与 `/download` 的 HTTPS 流式端点传输；`/relay-download` 在单跳网关上连接目标 `/download` 并透传字节流，不把文件放入 RPC 或上下文。上传仍只支持直连 daemon。",
       "documentRole": "overview",
       "evidence": [
         {
@@ -98,8 +98,12 @@
           "locator": "if (typeof file !== \"string\" || !path.isAbsolute(file))"
         },
         {
-          "path": "README.md",
-          "locator": "- HTTP `/upload` 和 `/download` 只支持直连 daemon，不经 relay 转发。"
+          "path": "src/daemon/transport/relay-download.js",
+          "locator": "function handleRelayDownload(req, res, relayAllow)"
+        },
+        {
+          "path": "test/integration/relay-download.js",
+          "locator": "relay-download 网关流式下载、目标 TLS 和认证回归通过"
         }
       ]
     },

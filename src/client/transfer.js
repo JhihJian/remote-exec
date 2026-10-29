@@ -21,7 +21,7 @@ function httpOp(hostName, op, localFile, remoteFile, { signal } = {}) {
       host: route.host,
       port: route.port,
       servername,
-      ca: host.ca ? fs.readFileSync(host.ca) : undefined,
+      ca: route.ca ? fs.readFileSync(route.ca) : undefined,
       rejectUnauthorized: true,
     };
     let request;

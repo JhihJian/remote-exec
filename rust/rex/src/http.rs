@@ -8,10 +8,9 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 fn client(_entry: &HostEntry, ca_pem: &str) -> Result<reqwest::Client, String> {
-    let certificate = reqwest::Certificate::from_pem(ca_pem.as_bytes())
-        .map_err(|e| format!("CA PEM 无效: {e}"))?;
+    let tls = remote_exec_tls::pinned_or_ca_client_config(ca_pem)?;
     reqwest::Client::builder()
-        .add_root_certificate(certificate)
+        .use_preconfigured_tls(tls)
         .timeout(std::time::Duration::from_secs(1800))
         .connect_timeout(std::time::Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
@@ -55,7 +54,7 @@ pub async fn upload(
         .body(body)
         .send()
         .await
-        .map_err(|e| format!("上传失败: {e}"))?;
+        .map_err(|e| format!("上传失败: {e:?}"))?;
     let status = response.status();
     let text = response
         .text()
@@ -95,7 +94,7 @@ pub async fn download(
         .header("Authorization", format!("Bearer {token}"))
         .send()
         .await
-        .map_err(|e| format!("下载失败: {e}"))?;
+        .map_err(|e| format!("下载失败: {e:?}"))?;
     if std::env::var("REX_DEBUG").is_ok() {
         eprintln!("[rex] GET {} → {}", response.url(), response.status());
     }
@@ -131,7 +130,7 @@ pub async fn download_via(
         .body(body.to_string())
         .send()
         .await
-        .map_err(|e| format!("经网关下载失败: {e}"))?;
+        .map_err(|e| format!("经网关下载失败: {e:?}"))?;
     if std::env::var("REX_DEBUG").is_ok() {
         eprintln!("[rex] POST relay-download → {}", response.status());
     }

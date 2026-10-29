@@ -15,6 +15,8 @@ use std::{
     time::Duration,
 };
 use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
+use tokio_rustls::{TlsConnector, rustls::pki_types::ServerName};
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{
@@ -203,25 +205,26 @@ async fn relay_download(
         .and_then(|v| v.as_str())
         .ok_or("缺少 file")?;
     files::absolute(Some(file)).map_err(|e| e.message)?;
-    let certificate = reqwest::Certificate::from_pem(ca.as_bytes())?;
-    let target_addr = format!("{host}:{port}")
-        .parse()
-        .map_err(|_| "目标地址无效")?;
-    let client = reqwest::Client::builder()
-        .add_root_certificate(certificate)
-        .resolve(servername, target_addr)
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30 * 60))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    let response = client
-        .get(format!(
-            "https://{servername}:{port}/download?path={}",
-            encode_query(file)
-        ))
+    let config = remote_exec_tls::pinned_or_ca_client_config(ca).map_err(|e| e.to_string())?;
+    let connector = TlsConnector::from(Arc::new(config));
+    let stream = tokio::time::timeout(
+        Duration::from_secs(10),
+        TcpStream::connect((host, port as u16)),
+    )
+    .await??;
+    let server_name = ServerName::try_from(servername.to_owned())?;
+    let stream = connector.connect(server_name, stream).await?;
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/download?path={}", encode_query(file)))
         .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await?;
+        .body(http_body_util::Empty::<Bytes>::new())?;
+    let response = sender.send_request(request).await?;
     let status = StatusCode::from_u16(response.status().as_u16())?;
     let content_type = response
         .headers()
@@ -235,7 +238,8 @@ async fn relay_download(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
     let stream = response
-        .bytes_stream()
+        .into_body()
+        .into_data_stream()
         .map_err(|e| -> AnyError { Box::new(e) })
         .map_ok(Frame::data)
         .map(move |item| {
